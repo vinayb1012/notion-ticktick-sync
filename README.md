@@ -128,6 +128,30 @@ The dashboard has three tabs:
 
 All config values can be overridden with environment variables (`NOTION_TOKEN`, `WEEKLY_ITEMS_DATABASE_ID`, etc.) for cloud deployment.
 
+## Deploying to Render
+
+The repo includes a Render Blueprint (`render.yaml`) that deploys both services:
+
+- **Web service** — the dashboard (FastAPI + React in a Docker image), health-checked at `/api/health`
+- **Cron job** — runs the sync every hour; an hour guard (`SYNC_START_HOUR=8`, `SYNC_END_HOUR=23`) makes it no-op outside 8:00–23:00 UTC
+
+### Steps
+
+1. Push this repo to GitHub (already done — it's private, which is fine: Render connects via OAuth).
+2. In [Render](https://dashboard.render.com): **New → Blueprint**, select the repo. Render reads `render.yaml` and creates both services.
+3. Fill in the `sync: false` env vars in each service's **Environment** tab:
+   - `TICKTICK_CLIENT_ID`, `TICKTICK_CLIENT_SECRET` — from your TickTick OAuth app
+   - `TICKTICK_ACCESS_TOKEN`, `TICKTICK_REFRESH_TOKEN` — from a local `--setup` run (copy them out of `config.json`)
+   - `NOTION_TOKEN`, `NOTION_DATABASE_ID`, `NOTION_TEMPLATE_ID`, `WEEKLY_ITEMS_DATABASE_ID` — from your Notion integration
+4. Deploy. The dashboard URL is `https://ticktick-notion-sync.onrender.com` (free tier sleeps after 15 min idle; first load takes ~30–60s).
+
+### Notes
+
+- **Free cron jobs require the web service to exist** on the same workspace; the Blueprint sets this up for you.
+- **Token rotation**: TickTick may rotate the refresh token. The cron job logs a warning if it can't persist `config.json`. If syncs start failing with 401 after a deploy/restart, re-copy fresh tokens from a local `--setup` run into the Render env vars.
+- **launchd**: once Render's cron is verified working, unload the local scheduler (`launchctl unload ~/Library/LaunchAgents/com.vinayb.ticktick-notion-sync.plist`) to avoid double-syncing.
+- **Timezone**: the hour guard uses UTC. Adjust `SYNC_START_HOUR`/`SYNC_END_HOUR` if you want a local-time window.
+
 ## Logs & Troubleshooting
 
 ```bash

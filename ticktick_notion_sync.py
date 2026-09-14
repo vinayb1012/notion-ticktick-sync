@@ -8,6 +8,7 @@ Runs via launchd every 2 hours.
 
 import json
 import logging
+import os
 import sys
 import time
 import webbrowser
@@ -49,6 +50,10 @@ CONFIG_PATH = SCRIPT_DIR / "config.json"
 LOG_DIR = Path.home() / "logs"
 LOG_PATH = LOG_DIR / "ticktick-notion-sync.log"
 
+# Cloud deployment: hour guard via env vars (Render cron runs 24/7)
+SYNC_START_HOUR = int(os.environ.get("SYNC_START_HOUR", "0"))
+SYNC_END_HOUR = int(os.environ.get("SYNC_END_HOUR", "24"))
+
 TICKTICK_AUTH_URL = "https://ticktick.com/oauth/authorize"
 TICKTICK_TOKEN_URL = "https://ticktick.com/oauth/token"
 TICKTICK_API_BASE = "https://api.ticktick.com/open/v1"
@@ -79,13 +84,40 @@ log = logging.getLogger("ticktick-notion-sync")
 # Config helpers
 # ---------------------------------------------------------------------------
 
+# Env var keys that override config.json values (cloud deployment)
+ENV_OVERRIDES = {
+    "ticktick_client_id": "TICKTICK_CLIENT_ID",
+    "ticktick_client_secret": "TICKTICK_CLIENT_SECRET",
+    "ticktick_access_token": "TICKTICK_ACCESS_TOKEN",
+    "ticktick_refresh_token": "TICKTICK_REFRESH_TOKEN",
+    "notion_token": "NOTION_TOKEN",
+    "notion_database_id": "NOTION_DATABASE_ID",
+    "notion_template_id": "NOTION_TEMPLATE_ID",
+    "weekly_items_database_id": "WEEKLY_ITEMS_DATABASE_ID",
+    "redirect_uri": "REDIRECT_URI",
+}
+
+
 def load_config() -> dict:
-    with open(CONFIG_PATH) as f:
-        return json.load(f)
+    cfg: dict = {}
+    if CONFIG_PATH.exists():
+        with open(CONFIG_PATH) as f:
+            cfg = json.load(f)
+    else:
+        log.info("No config.json found — using environment variables")
+    for key, env in ENV_OVERRIDES.items():
+        val = os.environ.get(env)
+        if val:
+            cfg[key] = val
+    return cfg
 
 def save_config(cfg: dict) -> None:
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(cfg, f, indent=2)
+    """Persist config (token rotation). Warn when the filesystem is ephemeral."""
+    try:
+        with open(CONFIG_PATH, "w") as f:
+            json.dump(cfg, f, indent=2)
+    except OSError as e:
+        log.warning(f"Cannot persist config.json ({e}) — token rotation will be lost on restart")
 
 # ---------------------------------------------------------------------------
 # OAuth helpers
@@ -1093,6 +1125,13 @@ def sync_weekly_items_to_journal(cfg: dict, page_id: str, items: list[dict]) -> 
 
 def sync() -> None:
     """Run the full TickTick → Notion sync."""
+    # Hour guard for always-on cron schedulers (no-op outside the window)
+    if SYNC_START_HOUR > 0 or SYNC_END_HOUR < 24:
+        hour = datetime.now().hour
+        if not (SYNC_START_HOUR <= hour < SYNC_END_HOUR):
+            log.info(f"Hour {hour} outside sync window {SYNC_START_HOUR}-{SYNC_END_HOUR} — skipping")
+            return
+
     log.info("=" * 40)
     log.info("Starting TickTick → Notion sync")
 
