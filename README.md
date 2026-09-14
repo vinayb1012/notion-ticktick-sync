@@ -125,7 +125,7 @@ The dashboard has three tabs:
 | PATCH | `/api/items/{id}/priority` | Change item priority |
 | DELETE | `/api/items/{id}` | Delete item |
 | POST | `/api/sync-week/{date}` | Push weekly snapshot to journal |
-| POST | `/api/run-sync` | Run today's sync (external cron; `Authorization: Bearer $CRON_SECRET`) |
+| POST | `/api/run-sync` | Run today's sync (external cron; accepts GET or POST; `Authorization: Bearer $CRON_SECRET`) |
 
 All config values can be overridden with environment variables (`NOTION_TOKEN`, `WEEKLY_ITEMS_DATABASE_ID`, etc.) for cloud deployment.
 
