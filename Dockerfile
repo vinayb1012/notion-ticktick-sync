@@ -13,7 +13,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY ticktick_notion_sync.py app/ ./
+COPY ticktick_notion_sync.py ./
+COPY app/ ./app/
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
 # Cron mode entrypoint: run sync once and exit (hour-guarded via env)
