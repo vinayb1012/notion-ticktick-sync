@@ -6,5 +6,6 @@
   "notion_token": "ntn_your_notion_integration_token",
   "notion_database_id": "your_daily_journal_database_id",
   "notion_template_id": "your_daily_journal_template_id",
+  "weekly_items_database_id": "your_weekly_items_database_id",
   "redirect_uri": "http://localhost:8080/"
 }

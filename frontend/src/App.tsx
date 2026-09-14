@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import './App.css'
 
 interface Task {
   id: string
@@ -19,29 +20,138 @@ interface SyncResult {
   created: boolean
 }
 
+interface WeeklyItem {
+  id: string
+  name: string
+  done: boolean
+  week: string
+  priority: string
+}
+
+interface WeekData {
+  week_start: string
+  week_end: string
+  items: WeeklyItem[]
+}
+
+interface HistoryEntry {
+  job_id: string
+  status: string
+  date: string
+  kind?: string
+  result?: SyncResult & { pages?: unknown[] }
+  error?: string
+  finished_at: string
+}
+
+const PRIORITIES = ['1. High', '2. Medium', '3. Low'] as const
+
+const todayStr = () => {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+const shiftDate = (dateStr: string, days: number) => {
+  const d = new Date(dateStr + 'T00:00:00')
+  d.setDate(d.getDate() + days)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+const fmtDate = (dateStr: string) => {
+  const d = new Date(dateStr + 'T00:00:00')
+  return d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })
+}
+
+const prioColor = (p: number) => (p >= 5 ? 'prio-high' : p >= 3 ? 'prio-med' : p >= 1 ? 'prio-low' : 'prio-none')
+
 function App() {
-  const [date, setDate] = useState(() => new Date().toISOString().split('T')[0])
+  const [date, setDate] = useState(todayStr)
   const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [result, setResult] = useState<SyncResult | null>(null)
   const [error, setError] = useState('')
+  const [health, setHealth] = useState<{ ticktick: boolean; notion: boolean } | null>(null)
 
-  const fetchTasks = async () => {
+  const [week, setWeek] = useState<WeekData | null>(null)
+  const [weekLoading, setWeekLoading] = useState(false)
+  const [newItem, setNewItem] = useState('')
+  const [newPrio, setNewPrio] = useState<string>('2. Medium')
+  const [addingItem, setAddingItem] = useState(false)
+  const [weekSyncing, setWeekSyncing] = useState(false)
+
+  const [history, setHistory] = useState<HistoryEntry[]>([])
+  const [tab, setTab] = useState<'day' | 'week' | 'history'>('day')
+
+  const pollRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    fetch('/api/health')
+      .then(r => r.json())
+      .then(d => setHealth({ ticktick: d.ticktick_configured, notion: d.notion_configured }))
+      .catch(() => setHealth({ ticktick: false, notion: false }))
+  }, [])
+
+  const loadHistory = useCallback(() => {
+    fetch('/api/sync/history')
+      .then(r => r.json())
+      .then(d => setHistory(d.history || []))
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    loadHistory()
+    const iv = setInterval(loadHistory, 10000)
+    return () => clearInterval(iv)
+  }, [loadHistory])
+
+  const fetchTasks = useCallback(async (d: string) => {
     setLoading(true)
     setError('')
     setTasks([])
     setResult(null)
     try {
-      const resp = await fetch(`/api/tasks/${date}`)
+      const resp = await fetch(`/api/tasks/${d}`)
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       const data = await resp.json()
       setTasks(data.tasks)
-    } catch (e: any) {
-      setError(e.message || 'Failed to fetch tasks')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to fetch tasks')
     } finally {
       setLoading(false)
     }
+  }, [])
+
+  const fetchWeek = useCallback(async (d: string) => {
+    setWeekLoading(true)
+    try {
+      const resp = await fetch(`/api/week/${d}`)
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      setWeek(await resp.json())
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load weekly items')
+    } finally {
+      setWeekLoading(false)
+    }
+  }, [])
+
+  // Auto-load on date change
+  useEffect(() => {
+    fetchTasks(date)
+    fetchWeek(date)
+  }, [date, fetchTasks, fetchWeek])
+
+  useEffect(() => () => { if (pollRef.current) window.clearTimeout(pollRef.current) }, [])
+
+  const pollJob = async (jobId: string, onDone: (entry: Record<string, unknown>) => void) => {
+    for (let i = 0; i < 60; i++) {
+      await new Promise(r => setTimeout(r, 1000))
+      const resp = await fetch(`/api/sync/status/${jobId}`)
+      const status = await resp.json()
+      if (status.status === 'done') { onDone(status); return }
+      if (status.status === 'error') throw new Error(status.error || 'Job failed')
+    }
+    throw new Error('Sync timed out')
   }
 
   const syncTasks = async () => {
@@ -49,126 +159,292 @@ function App() {
     setError('')
     setResult(null)
     try {
-      // Start sync job
       const resp = await fetch(`/api/sync/${date}`, { method: 'POST' })
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       const { job_id } = await resp.json()
-
-      // Poll for completion
-      let attempts = 0
-      while (attempts < 30) {
-        await new Promise(r => setTimeout(r, 1000))
-        const statusResp = await fetch(`/api/sync/status/${job_id}`)
-        const status = await statusResp.json()
-        if (status.status === 'done') {
-          setResult(status.result)
-          break
-        }
-        if (status.status === 'error') {
-          throw new Error(status.error)
-        }
-        attempts++
-      }
-      if (attempts >= 30) throw new Error('Sync timed out')
-    } catch (e: any) {
-      setError(e.message || 'Sync failed')
+      await pollJob(job_id, status => {
+        setResult(status.result as SyncResult)
+        loadHistory()
+      })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Sync failed')
     } finally {
       setSyncing(false)
     }
   }
 
-  const priorityEmoji = (p: number) => {
-    if (p >= 5) return '🔴 '
-    if (p >= 3) return '🟡 '
-    if (p >= 1) return '🟢 '
-    return ''
+  const syncWeek = async () => {
+    setWeekSyncing(true)
+    setError('')
+    try {
+      const resp = await fetch(`/api/sync-week/${date}`, { method: 'POST' })
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      const { job_id } = await resp.json()
+      await pollJob(job_id, () => loadHistory())
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Weekly sync failed')
+    } finally {
+      setWeekSyncing(false)
+    }
   }
 
-  return (
-    <div style={{ maxWidth: 600, margin: '40px auto', fontFamily: 'system-ui, sans-serif', padding: '0 20px' }}>
-      <h1>TickTick → Notion Sync</h1>
+  const addItem = async () => {
+    const name = newItem.trim()
+    if (!name) return
+    setAddingItem(true)
+    try {
+      const resp = await fetch(`/api/week/${date}/items`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, priority: newPrio }),
+      })
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      setNewItem('')
+      await fetchWeek(date)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to add item')
+    } finally {
+      setAddingItem(false)
+    }
+  }
 
-      <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 24 }}>
-        <input
-          type="date"
-          value={date}
-          onChange={e => setDate(e.target.value)}
-          style={{ padding: '8px 12px', fontSize: 16, borderRadius: 6, border: '1px solid #ccc' }}
-        />
-        <button
-          onClick={fetchTasks}
-          disabled={loading}
-          style={{ padding: '8px 16px', fontSize: 16, borderRadius: 6, cursor: loading ? 'wait' : 'pointer' }}
-        >
-          {loading ? 'Loading...' : 'Fetch Tasks'}
-        </button>
-        <button
-          onClick={syncTasks}
-          disabled={syncing || tasks.length === 0}
-          style={{
-            padding: '8px 16px',
-            fontSize: 16,
-            borderRadius: 6,
-            cursor: syncing ? 'wait' : tasks.length === 0 ? 'not-allowed' : 'pointer',
-            opacity: tasks.length === 0 ? 0.5 : 1,
-            background: '#2563eb',
-            color: 'white',
-            border: 'none',
-          }}
-        >
-          {syncing ? 'Syncing...' : 'Sync to Notion'}
+  const toggleItem = async (item: WeeklyItem) => {
+    // Optimistic update
+    setWeek(w => w ? { ...w, items: w.items.map(i => i.id === item.id ? { ...i, done: !i.done } : i) } : w)
+    try {
+      const resp = await fetch(`/api/items/${item.id}/done`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ done: !item.done }),
+      })
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    } catch {
+      // Revert on failure
+      setWeek(w => w ? { ...w, items: w.items.map(i => i.id === item.id ? { ...i, done: item.done } : i) } : w)
+      setError('Failed to update item')
+    }
+  }
+
+  const changePrio = async (item: WeeklyItem, priority: string) => {
+    setWeek(w => w ? { ...w, items: w.items.map(i => i.id === item.id ? { ...i, priority } : i) } : w)
+    try {
+      const resp = await fetch(`/api/items/${item.id}/priority`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ priority }),
+      })
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    } catch {
+      setError('Failed to update priority')
+    }
+  }
+
+  const removeItem = async (item: WeeklyItem) => {
+    setWeek(w => w ? { ...w, items: w.items.filter(i => i.id !== item.id) } : w)
+    try {
+      const resp = await fetch(`/api/items/${item.id}`, { method: 'DELETE' })
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    } catch {
+      setError('Failed to delete item')
+      fetchWeek(date)
+    }
+  }
+
+  const doneCount = tasks.filter(t => t.status === 2).length
+  const weekDone = week?.items.filter(i => i.done).length ?? 0
+  const weekTotal = week?.items.length ?? 0
+  const allOk = health?.ticktick && health?.notion
+
+  return (
+    <div className="shell">
+      <header className="header">
+        <div className="brand">
+          <div className="brand-icon">⇄</div>
+          <div>
+            <h1>TickTick → Notion</h1>
+            <p>Sync dashboard</p>
+          </div>
+        </div>
+        <div className="status-dot">
+          <span className={`dot ${allOk ? '' : 'off'}`} />
+          {allOk ? 'Connected' : 'Check config'}
+        </div>
+      </header>
+
+      <div className="stats">
+        <div className="stat">
+          <div className="label">Tasks today</div>
+          <div className="value">{doneCount}/{tasks.length}</div>
+        </div>
+        <div className="stat">
+          <div className="label">Week progress</div>
+          <div className="value accent">{weekDone}/{weekTotal}</div>
+        </div>
+        <div className="stat">
+          <div className="label">Syncs run</div>
+          <div className="value">{history.filter(h => h.status === 'done').length}</div>
+        </div>
+        <div className="stat">
+          <div className="label">Failures</div>
+          <div className={`value ${history.some(h => h.status === 'error') ? '' : 'green'}`}>
+            {history.filter(h => h.status === 'error').length}
+          </div>
+        </div>
+      </div>
+
+      <div className="datebar">
+        <button className="nav-btn" onClick={() => setDate(d => shiftDate(d, -1))} title="Previous day">‹</button>
+        <input type="date" value={date} onChange={e => e.target.value && setDate(e.target.value)} />
+        <button className="nav-btn" onClick={() => setDate(d => shiftDate(d, 1))} title="Next day">›</button>
+        <button className="today-btn" onClick={() => setDate(todayStr())}>Today</button>
+        <div className="spacer" />
+        <button className="btn btn-primary" onClick={syncTasks} disabled={syncing}>
+          {syncing ? <><span className="spinner" /> Syncing…</> : <>Sync {fmtDate(date).split(',')[0]} to Notion</>}
         </button>
       </div>
 
-      {error && (
-        <div style={{ padding: 12, background: '#fef2f2', color: '#dc2626', borderRadius: 6, marginBottom: 16 }}>
-          {error}
-        </div>
-      )}
-
+      {error && <div className="alert error">⚠ {error}</div>}
       {result && (
-        <div style={{ padding: 12, background: '#f0fdf4', color: '#16a34a', borderRadius: 6, marginBottom: 16 }}>
-          <strong>Sync complete!</strong>{' '}
-          {result.created ? 'Created new page' : 'Updated existing page'} for {result.date}.{' '}
-          {result.tasks_synced} tasks synced.{' '}
-          <a href={result.page_url} target="_blank" rel="noopener noreferrer" style={{ color: '#16a34a' }}>
-            Open in Notion →
-          </a>
+        <div className="alert success">
+          ✓ {result.created ? 'Created' : 'Updated'} journal page for {result.date} — {result.tasks_synced} tasks.{' '}
+          <a href={result.page_url} target="_blank" rel="noopener noreferrer">Open in Notion →</a>
         </div>
       )}
 
-      {tasks.length > 0 && (
-        <div>
-          <h2>Tasks for {date} ({tasks.length})</h2>
-          <ul style={{ listStyle: 'none', padding: 0 }}>
-            {tasks.map(t => (
-              <li
-                key={t.id}
-                style={{
-                  padding: '8px 12px',
-                  borderBottom: '1px solid #e5e7eb',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                }}
-              >
-                <input type="checkbox" checked={t.status === 2} readOnly />
-                <span>
-                  {priorityEmoji(t.priority)}
-                  {t.title}
-                </span>
-                <span style={{ color: '#9ca3af', fontSize: 12, marginLeft: 'auto' }}>
-                  {t.projectName}
-                </span>
-              </li>
-            ))}
-          </ul>
+      <div className="tabs">
+        <button className={`tab ${tab === 'day' ? 'active' : ''}`} onClick={() => setTab('day')}>Day</button>
+        <button className={`tab ${tab === 'week' ? 'active' : ''}`} onClick={() => setTab('week')}>Week</button>
+        <button className={`tab ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>History</button>
+      </div>
+
+      {tab === 'day' && (
+        <div className="card">
+          <div className="card-head">
+            <h2>📋 {fmtDate(date)}</h2>
+            {tasks.length > 0 && <span className="count">{doneCount}/{tasks.length} done</span>}
+          </div>
+          {tasks.length > 0 && (
+            <div className="progress">
+              <div
+                className={`fill ${doneCount === tasks.length ? 'complete' : ''}`}
+                style={{ width: `${tasks.length ? (doneCount / tasks.length) * 100 : 0}%` }}
+              />
+            </div>
+          )}
+          <div className="card-body">
+            {loading ? (
+              <div className="empty"><span className="spinner dark" style={{ display: 'inline-block' }} /></div>
+            ) : tasks.length === 0 ? (
+              <div className="empty">
+                <div className="icon">🌤</div>
+                No tasks for this day
+              </div>
+            ) : (
+              tasks.map(t => (
+                <div className="row" key={t.id}>
+                  <span className={`checkbox static ${t.status === 2 ? 'checked' : ''}`}>✓</span>
+                  <span className={`prio-dot ${prioColor(t.priority)}`} />
+                  <span className={`title ${t.status === 2 ? 'done' : ''}`}>{t.title}</span>
+                  {t.desc && <span className="meta" title={t.desc}>📝</span>}
+                  <span className="proj-tag">{t.projectName || 'Inbox'}</span>
+                </div>
+              ))
+            )}
+          </div>
         </div>
       )}
 
-      {!loading && tasks.length === 0 && !error && !result && (
-        <p style={{ color: '#6b7280' }}>Select a date and click "Fetch Tasks" to preview.</p>
+      {tab === 'week' && (
+        <div className="card">
+          <div className="week-banner">
+            <span>Week of <strong>{week ? fmtDate(week.week_start) : '…'}</strong> → <strong>{week ? fmtDate(week.week_end) : ''}</strong></span>
+            <button className="btn btn-ghost" onClick={syncWeek} disabled={weekSyncing} style={{ padding: '6px 14px', fontSize: 13 }}>
+              {weekSyncing ? <><span className="spinner dark" /> Syncing…</> : '↻ Push to journal'}
+            </button>
+          </div>
+          {weekTotal > 0 && (
+            <div className="progress">
+              <div
+                className={`fill ${weekDone === weekTotal ? 'complete' : ''}`}
+                style={{ width: `${weekTotal ? (weekDone / weekTotal) * 100 : 0}%` }}
+              />
+            </div>
+          )}
+          <div className="card-body">
+            {weekLoading ? (
+              <div className="empty"><span className="spinner dark" style={{ display: 'inline-block' }} /></div>
+            ) : weekTotal === 0 ? (
+              <div className="empty">
+                <div className="icon">🗓</div>
+                No weekly items yet — add your first below
+              </div>
+            ) : (
+              week!.items.map(item => (
+                <div className="row" key={item.id}>
+                  <button className={`checkbox ${item.done ? 'checked' : ''}`} onClick={() => toggleItem(item)}>✓</button>
+                  <span className={`title ${item.done ? 'done' : ''}`}>{item.name}</span>
+                  <select
+                    className="prio-select"
+                    value={item.priority}
+                    onChange={e => changePrio(item, e.target.value)}
+                  >
+                    {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
+                    {!item.priority && <option value="">—</option>}
+                  </select>
+                  <button className="btn-danger-ghost" onClick={() => removeItem(item)} title="Delete">✕</button>
+                </div>
+              ))
+            )}
+          </div>
+          <div className="add-row">
+            <input
+              type="text"
+              placeholder="Add a weekly item…"
+              value={newItem}
+              onChange={e => setNewItem(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && addItem()}
+            />
+            <select value={newPrio} onChange={e => setNewPrio(e.target.value)}>
+              {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
+            </select>
+            <button className="btn btn-primary" onClick={addItem} disabled={addingItem || !newItem.trim()}>
+              {addingItem ? '…' : 'Add'}
+            </button>
+          </div>
+        </div>
       )}
+
+      {tab === 'history' && (
+        <div className="card">
+          <div className="card-head">
+            <h2>🕘 Recent syncs</h2>
+            <span className="count">{history.length}</span>
+          </div>
+          <div className="card-body">
+            {history.length === 0 ? (
+              <div className="empty">
+                <div className="icon">💤</div>
+                No syncs run yet in this session
+              </div>
+            ) : (
+              history.map(h => (
+                <div className="hist-row" key={h.job_id}>
+                  <span className={`badge ${h.status}`}>{h.status}</span>
+                  <span>{h.kind === 'week' ? 'Weekly items' : `Daily ${h.date}`}</span>
+                  {h.status === 'error' && <span style={{ color: 'var(--red)', fontSize: 12 }}>{h.error}</span>}
+                  <span className="when">
+                    {new Date(h.finished_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      <footer className="footer">
+        TickTick → Notion Sync · runs every 2h via launchd · <a href="https://ticktick.com" target="_blank" rel="noopener noreferrer">TickTick</a> · <a href="https://notion.so" target="_blank" rel="noopener noreferrer">Notion</a>
+      </footer>
     </div>
   )
 }

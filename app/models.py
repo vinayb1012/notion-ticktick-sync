@@ -30,3 +30,11 @@ class TasksResponse(BaseModel):
     date: str
     tasks: list[Task]
     total: int
+
+
+class WeeklyItem(BaseModel):
+    id: str
+    name: str
+    done: bool
+    week: str
+    priority: str

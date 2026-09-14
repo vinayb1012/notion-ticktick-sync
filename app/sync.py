@@ -36,3 +36,40 @@ async def sync_date(date_str: str) -> dict:
         "tasks_synced": len(tasks),
         "created": created,
     }
+
+
+async def sync_week(week_start: str, week_end: str) -> dict:
+    """Sync weekly items snapshot into each daily journal page of the week.
+
+    Only touches TODAY's page (past/future pages are frozen history).
+    """
+    cfg = load_config()
+
+    from datetime import datetime, timedelta
+    from app.weekly import list_weekly_items
+
+    start = datetime.strptime(week_start, "%Y-%m-%d")
+    end = datetime.strptime(week_end, "%Y-%m-%d")
+    today_local = datetime.now().astimezone().strftime("%Y-%m-%d")
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        items = await list_weekly_items(cfg, client, week_start)
+
+        results = []
+        d = start
+        while d <= end:
+            date_str = d.strftime("%Y-%m-%d")
+            page_id = await find_journal_page(cfg, client, date_str)
+            if page_id:
+                from app.notion import sync_weekly_items_to_journal
+                synced = await sync_weekly_items_to_journal(cfg, client, page_id, items)
+                results.append({"date": date_str, "page_id": page_id, **synced})
+            d += timedelta(days=1)
+
+    return {
+        "week_start": week_start,
+        "week_end": week_end,
+        "items": len(items),
+        "today": today_local,
+        "pages": results,
+    }

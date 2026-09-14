@@ -402,3 +402,182 @@ async def write_tasks_to_journal(cfg: dict, client: httpx.AsyncClient, page_id: 
     )
 
     log.info(f"Wrote {len(tasks)} tasks to journal page")
+
+
+# ---------------------------------------------------------------------------
+# Weekly items sync (ported from ticktick_notion_sync.py, async version)
+# ---------------------------------------------------------------------------
+
+WEEKLY_TOGGLE_NAME = "Weekly items"
+
+
+def _plain_text(rich_text: list) -> str:
+    return "".join(rt.get("plain_text", "") for rt in rich_text)
+
+
+async def find_weekly_toggle(cfg: dict, client: httpx.AsyncClient, page_id: str) -> str | None:
+    """Find the 'Weekly items' toggle block on a journal page."""
+    resp = await client.get(
+        f"{NOTION_API_BASE}/blocks/{page_id}/children",
+        headers=_headers(cfg),
+    )
+    resp.raise_for_status()
+    for block in resp.json().get("results", []):
+        if block.get("type") == "toggle":
+            if _plain_text(block["toggle"].get("rich_text", [])) == WEEKLY_TOGGLE_NAME:
+                return block["id"]
+    return None
+
+
+async def read_weekly_toggle_items(cfg: dict, client: httpx.AsyncClient, toggle_id: str) -> list[dict]:
+    """Read to_do blocks inside the Weekly items toggle."""
+    items = []
+    has_more = True
+    cursor = None
+    while has_more:
+        params = {"page_size": 100}
+        if cursor:
+            params["start_cursor"] = cursor
+        resp = await client.get(
+            f"{NOTION_API_BASE}/blocks/{toggle_id}/children",
+            headers=_headers(cfg),
+            params=params,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        for block in data.get("results", []):
+            if block.get("type") == "to_do":
+                items.append({
+                    "block_id": block["id"],
+                    "text": _plain_text(block["to_do"].get("rich_text", [])),
+                    "checked": block["to_do"].get("checked", False),
+                })
+        has_more = data.get("has_more", False)
+        cursor = data.get("next_cursor")
+    return items
+
+
+async def sync_weekly_items_to_journal(cfg: dict, client: httpx.AsyncClient, page_id: str, items: list[dict]) -> dict:
+    """Sync weekly items into a journal page's 'Weekly items' toggle.
+
+    - Creates the toggle (after 'Tasks for the day' heading) if missing
+    - Adds new items as static checkboxes (snapshot)
+    - Reconciles check state both ways: journal checkbox <-> DB Done
+    - Never removes existing snapshot items (history preservation)
+    """
+    out = {"checked_journal_to_db": 0, "checked_db_to_journal": 0, "appended": 0, "created_toggle": False}
+
+    if not items:
+        return out
+
+    # Two-way check reconciliation when toggle already exists
+    toggle_id = await find_weekly_toggle(cfg, client, page_id)
+    if toggle_id:
+        journal_items = await read_weekly_toggle_items(cfg, client, toggle_id)
+        db_by_name = {it["name"].strip(): it for it in items}
+
+        # 1) Journal -> DB: user checked an item on the journal page
+        for ji in journal_items:
+            match = db_by_name.get(ji["text"].strip())
+            if match and ji["checked"] and not match["done"]:
+                resp = await client.patch(
+                    f"{NOTION_API_BASE}/pages/{match['id']}",
+                    headers=_headers(cfg),
+                    json={"properties": {"Done": {"checkbox": True}}},
+                )
+                resp.raise_for_status()
+                match["done"] = True
+                out["checked_journal_to_db"] += 1
+
+        # 2) DB -> Journal: user checked an item in the DB/Weekly list
+        for ji in journal_items:
+            match = db_by_name.get(ji["text"].strip())
+            if match and match["done"] and not ji["checked"]:
+                resp = await client.patch(
+                    f"{NOTION_API_BASE}/blocks/{ji['block_id']}",
+                    headers=_headers(cfg),
+                    json={"to_do": {"checked": True}},
+                )
+                resp.raise_for_status()
+                out["checked_db_to_journal"] += 1
+
+        # 3) Append items added to the DB after this page's snapshot was taken.
+        existing_names = {ji["text"].strip().lower() for ji in journal_items}
+        new_items = [it for it in items if it["name"].strip().lower() not in existing_names]
+        if new_items:
+            children = [
+                {
+                    "object": "block",
+                    "type": "to_do",
+                    "to_do": {
+                        "rich_text": [{"type": "text", "text": {"content": it["name"]}}],
+                        "checked": it["done"],
+                    },
+                }
+                for it in new_items
+            ]
+            resp = await client.patch(
+                f"{NOTION_API_BASE}/blocks/{toggle_id}/children",
+                headers=_headers(cfg),
+                json={"children": children},
+            )
+            resp.raise_for_status()
+            out["appended"] = len(new_items)
+
+        return out
+
+    # Create the toggle after the 'Tasks for the day' heading
+    tasks_heading_id = await _find_tasks_heading_block(cfg, client, page_id)
+    if not tasks_heading_id:
+        await _add_journal_structure(cfg, client, page_id)
+        tasks_heading_id = await _find_tasks_heading_block(cfg, client, page_id)
+    if not tasks_heading_id:
+        log.error("Cannot place 'Weekly items' toggle: no 'Tasks for the day' heading")
+        return out
+
+    toggle_resp = await client.patch(
+        f"{NOTION_API_BASE}/blocks/{page_id}/children",
+        headers=_headers(cfg),
+        json={
+            "children": [
+                {
+                    "object": "block",
+                    "type": "toggle",
+                    "toggle": {
+                        "rich_text": [
+                            {"type": "text", "text": {"content": WEEKLY_TOGGLE_NAME}}
+                        ]
+                    },
+                }
+            ],
+            "after": tasks_heading_id,
+        },
+    )
+    toggle_resp.raise_for_status()
+    toggle_id = toggle_resp.json()["results"][0]["id"]
+    out["created_toggle"] = True
+
+    # Append snapshot checkboxes (static copy - this is the historical record)
+    priority_rank = {"1. High": 0, "2. Medium": 1, "3. Low": 2}
+    ordered = sorted(items, key=lambda it: priority_rank.get(it["priority"], 3))
+    children = [
+        {
+            "object": "block",
+            "type": "to_do",
+            "to_do": {
+                "rich_text": [{"type": "text", "text": {"content": it["name"]}}],
+                "checked": it["done"],
+            },
+        }
+        for it in ordered
+    ]
+    if children:
+        resp = await client.patch(
+            f"{NOTION_API_BASE}/blocks/{toggle_id}/children",
+            headers=_headers(cfg),
+            json={"children": children},
+        )
+        resp.raise_for_status()
+        out["appended"] = len(children)
+
+    return out

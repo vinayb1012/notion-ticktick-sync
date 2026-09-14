@@ -104,6 +104,30 @@ pip install -r requirements.txt
 cd frontend && npm install && npm run dev
 ```
 
+The dashboard has three tabs:
+
+- **Day** — browse TickTick tasks for any date (with prev/next navigation), see priority dots, project tags, and a completion progress bar, and trigger a one-click sync to the matching Notion journal page.
+- **Week** — view and edit the weekly checklist for the selected date's week: toggle items done (two-way synced with Notion), change priority inline, add new items, delete items, and push the snapshot to the journal with one click.
+- **History** — recent sync jobs with status, errors, and timestamps.
+
+#### API endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/health` | Config status |
+| GET | `/api/tasks/{date}` | TickTick tasks for a date |
+| POST | `/api/sync/{date}` | Start daily sync job |
+| GET | `/api/sync/status/{job_id}` | Job status |
+| GET | `/api/sync/history` | Recent job history |
+| GET | `/api/week/{date}` | Week bounds + weekly items |
+| POST | `/api/week/{date}/items` | Add weekly item (`{"name", "priority"}`) |
+| PATCH | `/api/items/{id}/done` | Toggle item done |
+| PATCH | `/api/items/{id}/priority` | Change item priority |
+| DELETE | `/api/items/{id}` | Delete item |
+| POST | `/api/sync-week/{date}` | Push weekly snapshot to journal |
+
+All config values can be overridden with environment variables (`NOTION_TOKEN`, `WEEKLY_ITEMS_DATABASE_ID`, etc.) for cloud deployment.
+
 ## Logs & Troubleshooting
 
 ```bash
