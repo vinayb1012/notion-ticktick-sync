@@ -13,6 +13,7 @@ import sys
 import time
 import webbrowser
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlencode, urlparse, parse_qs
@@ -249,10 +250,9 @@ def get_ticktick_tasks_due_today(cfg: dict) -> list[dict]:
 
     Uses per-project endpoint to avoid the 200-task limit of /task/filter.
     """
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-    # Timezone for local date comparison
-    local_tz = datetime.now(timezone.utc).astimezone().tzinfo
+    # Timezone for local date comparison (TZ_NAME env var overrides system tz)
+    tz_name = os.environ.get("TZ_NAME", "")
+    local_tz = ZoneInfo(tz_name) if tz_name else datetime.now(timezone.utc).astimezone().tzinfo
     today_local = datetime.now(local_tz).strftime("%Y-%m-%d")
 
     # Get all projects
@@ -613,7 +613,8 @@ def is_task_overdue(task: dict) -> bool:
     if task.get("status") == 2:
         return False
 
-    local_tz = datetime.now(timezone.utc).astimezone().tzinfo
+    tz_name = os.environ.get("TZ_NAME", "")
+    local_tz = ZoneInfo(tz_name) if tz_name else datetime.now(timezone.utc).astimezone().tzinfo
     today_local = datetime.now(local_tz).strftime("%Y-%m-%d")
     
     due = task.get("dueDate", "")

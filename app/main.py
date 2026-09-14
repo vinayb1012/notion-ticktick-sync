@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Request, Depends
@@ -282,7 +283,10 @@ async def run_sync(request: Request):
 
 
 def today_local() -> str:
-    return datetime.now().astimezone().strftime("%Y-%m-%d")
+    """Today's date in the configured timezone (TZ_NAME overrides system tz)."""
+    name = os.environ.get("TZ_NAME", "")
+    tz = ZoneInfo(name) if name else datetime.now().astimezone().tzinfo
+    return datetime.now(tz).strftime("%Y-%m-%d")
 
 
 # Catch-all: serve React app for any non-API route

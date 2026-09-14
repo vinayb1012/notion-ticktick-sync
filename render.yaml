@@ -32,6 +32,9 @@ services:
         value: "8"
       - key: SYNC_END_HOUR
         value: "23"
+      # Timezone for date comparisons (TickTick due dates, today's page)
+      - key: TZ_NAME
+        value: Europe/Stockholm
       # Shared secret required by /api/run-sync (set a long random string)
       - key: CRON_SECRET
         generateValue: true

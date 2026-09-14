@@ -1,8 +1,20 @@
 import httpx
 import logging
+import os
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 log = logging.getLogger("ticktick-notion-sync")
+
+
+def get_local_tz():
+    """Timezone used for all date comparisons.
+
+    Defaults to the system timezone; TZ_NAME env var overrides (e.g.
+    TZ_NAME=Europe/Stockholm on cloud hosts that run in UTC).
+    """
+    name = os.environ.get("TZ_NAME", "")
+    return ZoneInfo(name) if name else datetime.now(timezone.utc).astimezone().tzinfo
 
 
 class TickTickAuthError(Exception):
@@ -67,7 +79,7 @@ async def get_tasks_for_date(cfg: dict, client: httpx.AsyncClient, date_str: str
     and filters locally by dueDate. This handles recurring tasks correctly
     because /project/{pid}/data returns tasks with their current due dates.
     """
-    local_tz = datetime.now(timezone.utc).astimezone().tzinfo
+    local_tz = get_local_tz()
 
     projects = await get_projects(cfg, client)
 

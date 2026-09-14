@@ -1,7 +1,9 @@
 import httpx
 import time
 import logging
+import os
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 log = logging.getLogger("ticktick-notion-sync")
 
@@ -190,14 +192,18 @@ def _get_priority_emoji(priority: int) -> str:
     return ""
 
 
+def _get_local_tz():
+    """Timezone for date comparisons; TZ_NAME env var overrides system tz."""
+    name = os.environ.get("TZ_NAME", "")
+    return ZoneInfo(name) if name else datetime.now(timezone.utc).astimezone().tzinfo
+
+
 def _build_task_blocks(tasks: list[dict]) -> tuple[list[dict], int, int]:
     """Build Notion blocks from a list of TickTick tasks.
 
     Returns (blocks, completed_count, total_count).
     """
-    from datetime import datetime, timezone as tz
-
-    local_tz = datetime.now(tz.utc).astimezone().tzinfo
+    local_tz = _get_local_tz()
     today_local = datetime.now(local_tz).strftime("%Y-%m-%d")
 
     overdue_tasks = []
