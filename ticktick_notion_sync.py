@@ -591,7 +591,14 @@ def get_priority_emoji(priority: int) -> str:
 
 
 def is_task_overdue(task: dict) -> bool:
-    """Check if a task is overdue (due date is before today)."""
+    """Check if a task is overdue (due date is before today).
+
+    Completed tasks are never overdue — they belong in the Today section
+    with a checked box, even if their due date has passed.
+    """
+    if task.get("status") == 2:
+        return False
+
     local_tz = datetime.now(timezone.utc).astimezone().tzinfo
     today_local = datetime.now(local_tz).strftime("%Y-%m-%d")
     

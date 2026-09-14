@@ -210,7 +210,7 @@ def _build_task_blocks(tasks: list[dict]) -> tuple[list[dict], int, int]:
 
         due = task.get("dueDate", "")
         is_overdue = False
-        if due:
+        if task.get("status") != 2 and due:  # completed tasks are never overdue
             try:
                 utc_dt = datetime.fromisoformat(due.replace("+0000", "+00:00"))
                 due_date = utc_dt.astimezone(local_tz).strftime("%Y-%m-%d")
