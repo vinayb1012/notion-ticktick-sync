@@ -64,7 +64,85 @@ const fmtDate = (dateStr: string) => {
 
 const prioColor = (p: number) => (p >= 5 ? 'prio-high' : p >= 3 ? 'prio-med' : p >= 1 ? 'prio-low' : 'prio-none')
 
+const authHeaders = (): Record<string, string> => {
+  const token = localStorage.getItem('auth_token') || ''
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+async function apiFetch(url: string, opts: RequestInit = {}): Promise<Response> {
+  const resp = await fetch(url, {
+    ...opts,
+    headers: { ...authHeaders(), ...(opts.headers || {}) },
+  })
+  if (resp.status === 401) {
+    localStorage.removeItem('auth_token')
+    window.dispatchEvent(new Event('auth-expired'))
+    throw new Error('Unauthorized — log in again')
+  }
+  return resp
+}
+
 function App() {
+  const [authed, setAuthed] = useState<boolean | null>(null)
+  const [password, setPassword] = useState('')
+  const [authError, setAuthError] = useState('')
+
+  useEffect(() => {
+    const token = localStorage.getItem('auth_token')
+    if (!token) { setAuthed(false); return }
+    fetch('/api/auth-check', { headers: authHeaders() })
+      .then(r => setAuthed(r.ok))
+      .catch(() => setAuthed(false))
+  }, [])
+
+  useEffect(() => {
+    const onExpired = () => setAuthed(false)
+    window.addEventListener('auth-expired', onExpired)
+    return () => window.removeEventListener('auth-expired', onExpired)
+  }, [])
+
+  const login = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setAuthError('')
+    try {
+      const resp = await fetch('/api/auth-check', { headers: { Authorization: `Bearer ${password}` } })
+      if (resp.ok) {
+        localStorage.setItem('auth_token', password)
+        setAuthed(true)
+      } else {
+        setAuthError('Wrong password')
+      }
+    } catch {
+      setAuthError('Connection failed')
+    }
+  }
+
+  if (authed === null) return null
+  if (!authed) {
+    return (
+      <div className="shell login-shell">
+        <form className="login-card" onSubmit={login}>
+          <div className="brand-icon">⇄</div>
+          <h1>TickTick → Notion</h1>
+          <p>Enter the dashboard password</p>
+          <input
+            type="password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            placeholder="Password"
+            autoFocus
+          />
+          {authError && <div className="login-error">{authError}</div>}
+          <button className="btn btn-primary" type="submit">Log in</button>
+        </form>
+      </div>
+    )
+  }
+
+  return <Dashboard onLogout={() => { localStorage.removeItem('auth_token'); setAuthed(false) }} />
+}
+
+function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [date, setDate] = useState(todayStr)
   const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(false)
@@ -111,7 +189,7 @@ function App() {
     setTasks([])
     setResult(null)
     try {
-      const resp = await fetch(`/api/tasks/${d}`)
+      const resp = await apiFetch(`/api/tasks/${d}`)
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       const data = await resp.json()
       setTasks(data.tasks)
@@ -125,7 +203,7 @@ function App() {
   const fetchWeek = useCallback(async (d: string) => {
     setWeekLoading(true)
     try {
-      const resp = await fetch(`/api/week/${d}`)
+      const resp = await apiFetch(`/api/week/${d}`)
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       setWeek(await resp.json())
     } catch (e) {
@@ -146,7 +224,7 @@ function App() {
   const pollJob = async (jobId: string, onDone: (entry: Record<string, unknown>) => void) => {
     for (let i = 0; i < 60; i++) {
       await new Promise(r => setTimeout(r, 1000))
-      const resp = await fetch(`/api/sync/status/${jobId}`)
+      const resp = await apiFetch(`/api/sync/status/${jobId}`)
       const status = await resp.json()
       if (status.status === 'done') { onDone(status); return }
       if (status.status === 'error') throw new Error(status.error || 'Job failed')
@@ -159,7 +237,7 @@ function App() {
     setError('')
     setResult(null)
     try {
-      const resp = await fetch(`/api/sync/${date}`, { method: 'POST' })
+      const resp = await apiFetch(`/api/sync/${date}`, { method: 'POST' })
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       const { job_id } = await resp.json()
       await pollJob(job_id, status => {
@@ -177,7 +255,7 @@ function App() {
     setWeekSyncing(true)
     setError('')
     try {
-      const resp = await fetch(`/api/sync-week/${date}`, { method: 'POST' })
+      const resp = await apiFetch(`/api/sync-week/${date}`, { method: 'POST' })
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       const { job_id } = await resp.json()
       await pollJob(job_id, () => loadHistory())
@@ -193,9 +271,9 @@ function App() {
     if (!name) return
     setAddingItem(true)
     try {
-      const resp = await fetch(`/api/week/${date}/items`, {
+      const resp = await apiFetch(`/api/week/${date}/items`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ name, priority: newPrio }),
       })
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
@@ -212,9 +290,9 @@ function App() {
     // Optimistic update
     setWeek(w => w ? { ...w, items: w.items.map(i => i.id === item.id ? { ...i, done: !i.done } : i) } : w)
     try {
-      const resp = await fetch(`/api/items/${item.id}/done`, {
+      const resp = await apiFetch(`/api/items/${item.id}/done`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ done: !item.done }),
       })
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
@@ -228,9 +306,9 @@ function App() {
   const changePrio = async (item: WeeklyItem, priority: string) => {
     setWeek(w => w ? { ...w, items: w.items.map(i => i.id === item.id ? { ...i, priority } : i) } : w)
     try {
-      const resp = await fetch(`/api/items/${item.id}/priority`, {
+      const resp = await apiFetch(`/api/items/${item.id}/priority`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ priority }),
       })
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
@@ -242,7 +320,7 @@ function App() {
   const removeItem = async (item: WeeklyItem) => {
     setWeek(w => w ? { ...w, items: w.items.filter(i => i.id !== item.id) } : w)
     try {
-      const resp = await fetch(`/api/items/${item.id}`, { method: 'DELETE' })
+      const resp = await apiFetch(`/api/items/${item.id}`, { method: 'DELETE' })
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     } catch {
       setError('Failed to delete item')
@@ -268,6 +346,7 @@ function App() {
         <div className="status-dot">
           <span className={`dot ${allOk ? '' : 'off'}`} />
           {allOk ? 'Connected' : 'Check config'}
+          <button className="logout-btn" onClick={onLogout} title="Log out">⎋</button>
         </div>
       </header>
 
@@ -306,8 +385,7 @@ function App() {
       {error && <div className="alert error">⚠ {error}</div>}
       {result && (
         <div className="alert success">
-          ✓ {result.created ? 'Created' : 'Updated'} journal page for {result.date} — {result.tasks_synced} tasks.{' '}
-          <a href={result.page_url} target="_blank" rel="noopener noreferrer">Open in Notion →</a>
+          ✓ {result.created ? 'Created' : 'Updated'} journal page for {result.date} — {result.tasks_synced} tasks synced.
         </div>
       )}
 
@@ -345,7 +423,6 @@ function App() {
                   <span className={`checkbox static ${t.status === 2 ? 'checked' : ''}`}>✓</span>
                   <span className={`prio-dot ${prioColor(t.priority)}`} />
                   <span className={`title ${t.status === 2 ? 'done' : ''}`}>{t.title}</span>
-                  {t.desc && <span className="meta" title={t.desc}>📝</span>}
                   <span className="proj-tag">{t.projectName || 'Inbox'}</span>
                 </div>
               ))

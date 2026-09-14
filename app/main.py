@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Request, Depends
 from fastapi.responses import JSONResponse, FileResponse
 from starlette.staticfiles import StaticFiles
 
@@ -42,6 +42,23 @@ _job_history: list[dict] = []
 _MAX_HISTORY = 50
 
 
+def require_auth(request: Request) -> None:
+    """Require Authorization: Bearer <DASHBOARD_PASSWORD> on protected routes.
+
+    Auth is disabled entirely when DASHBOARD_PASSWORD is unset (local dev).
+    """
+    password = os.environ.get("DASHBOARD_PASSWORD", "")
+    if not password:
+        return
+    auth = request.headers.get("authorization", "")
+    if auth != f"Bearer {password}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+# Dependency list applied to every dashboard-facing route
+_auth = [Depends(require_auth)]
+
+
 @app.get("/api/health")
 async def health():
     cfg = load_config()
@@ -52,7 +69,7 @@ async def health():
     }
 
 
-@app.get("/api/tasks/{date_str}")
+@app.get("/api/tasks/{date_str}", dependencies=_auth)
 async def get_tasks(date_str: str) -> TasksResponse:
     """Fetch TickTick tasks for a specific date (YYYY-MM-DD)."""
     # Validate date format
@@ -72,7 +89,7 @@ async def get_tasks(date_str: str) -> TasksResponse:
     )
 
 
-@app.post("/api/sync/{date_str}")
+@app.post("/api/sync/{date_str}", dependencies=_auth)
 async def start_sync(date_str: str, background_tasks: BackgroundTasks):
     """Start a sync job for the given date. Returns immediately with a job ID."""
     try:
@@ -99,7 +116,7 @@ async def start_sync(date_str: str, background_tasks: BackgroundTasks):
     return {"job_id": job_id, "status": "running", "date": date_str}
 
 
-@app.get("/api/sync/status/{job_id}")
+@app.get("/api/sync/status/{job_id}", dependencies=_auth)
 async def sync_status(job_id: str):
     """Check the status of a sync job."""
     if job_id not in _jobs:
@@ -107,7 +124,7 @@ async def sync_status(job_id: str):
     return _jobs[job_id]
 
 
-@app.get("/api/sync/history")
+@app.get("/api/sync/history", dependencies=_auth)
 async def sync_history():
     """Recent sync job history (newest first)."""
     return {"history": list(reversed(_job_history[-_MAX_HISTORY:]))}
@@ -130,7 +147,13 @@ def _week_or_400(date_str: str) -> tuple[str, str]:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
 
 
-@app.get("/api/week/{date_str}")
+@app.get("/api/auth-check", dependencies=_auth)
+async def auth_check():
+    """Lightweight endpoint the frontend uses to validate a stored password."""
+    return {"ok": True}
+
+
+@app.get("/api/week/{date_str}", dependencies=_auth)
 async def get_week(date_str: str):
     """Week bounds + all weekly items for the week containing date_str."""
     week_start, week_end = _week_or_400(date_str)
@@ -144,7 +167,7 @@ async def get_week(date_str: str):
     }
 
 
-@app.post("/api/week/{date_str}/items")
+@app.post("/api/week/{date_str}/items", dependencies=_auth)
 async def add_item(date_str: str, body: dict):
     """Add a weekly item. Body: {name, priority?}. Week derived from date_str."""
     name = (body.get("name") or "").strip()
@@ -160,7 +183,7 @@ async def add_item(date_str: str, body: dict):
     return WeeklyItem(**item)
 
 
-@app.patch("/api/items/{page_id}/done")
+@app.patch("/api/items/{page_id}/done", dependencies=_auth)
 async def toggle_item_done(page_id: str, body: dict):
     cfg = load_config()
     async with httpx.AsyncClient(timeout=30) as client:
@@ -168,7 +191,7 @@ async def toggle_item_done(page_id: str, body: dict):
     return {"ok": True}
 
 
-@app.patch("/api/items/{page_id}/priority")
+@app.patch("/api/items/{page_id}/priority", dependencies=_auth)
 async def change_item_priority(page_id: str, body: dict):
     priority = body.get("priority") or ""
     if priority not in ("1. High", "2. Medium", "3. Low"):
@@ -179,7 +202,7 @@ async def change_item_priority(page_id: str, body: dict):
     return {"ok": True}
 
 
-@app.delete("/api/items/{page_id}")
+@app.delete("/api/items/{page_id}", dependencies=_auth)
 async def remove_item(page_id: str):
     cfg = load_config()
     async with httpx.AsyncClient(timeout=30) as client:
@@ -187,7 +210,7 @@ async def remove_item(page_id: str):
     return {"ok": True}
 
 
-@app.post("/api/sync-week/{date_str}")
+@app.post("/api/sync-week/{date_str}", dependencies=_auth)
 async def start_week_sync(date_str: str, background_tasks: BackgroundTasks):
     """Start a weekly-items sync job for the week containing date_str."""
     week_start, week_end = _week_or_400(date_str)
@@ -219,9 +242,10 @@ async def run_sync(request: Request):
     Respects the same hour window as the script (SYNC_START_HOUR/SYNC_END_HOUR).
     """
     secret = os.environ.get("CRON_SECRET", "")
-    if secret:
+    dashboard_pwd = os.environ.get("DASHBOARD_PASSWORD", "")
+    if secret or dashboard_pwd:
         auth = request.headers.get("authorization", "")
-        if auth != f"Bearer {secret}":
+        if auth not in (f"Bearer {secret}", f"Bearer {dashboard_pwd}"):
             return JSONResponse(status_code=401, content={"error": "Unauthorized"})
 
     start_hour = int(os.environ.get("SYNC_START_HOUR", "0"))

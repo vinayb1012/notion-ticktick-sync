@@ -125,9 +125,12 @@ The dashboard has three tabs:
 | PATCH | `/api/items/{id}/priority` | Change item priority |
 | DELETE | `/api/items/{id}` | Delete item |
 | POST | `/api/sync-week/{date}` | Push weekly snapshot to journal |
-| POST | `/api/run-sync` | Run today's sync (external cron; accepts GET or POST; `Authorization: Bearer $CRON_SECRET`) |
+| POST | `/api/run-sync` | Run today's sync (external cron; accepts any HTTP method; `Authorization: Bearer $CRON_SECRET` or `$DASHBOARD_PASSWORD`) |
+| GET | `/api/auth-check` | Validate dashboard password (login) |
 
 All config values can be overridden with environment variables (`NOTION_TOKEN`, `WEEKLY_ITEMS_DATABASE_ID`, etc.) for cloud deployment.
+
+**Dashboard password**: set `DASHBOARD_PASSWORD` to require `Authorization: Bearer <password>` on every dashboard API route (the frontend shows a login screen). Leave unset for open access (local dev). `/api/health` stays public; `/api/run-sync` accepts either `CRON_SECRET` or `DASHBOARD_PASSWORD`.
 
 ## Deploying to Render
 

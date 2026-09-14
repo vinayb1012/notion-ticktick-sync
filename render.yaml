@@ -35,3 +35,6 @@ services:
       # Shared secret required by /api/run-sync (set a long random string)
       - key: CRON_SECRET
         generateValue: true
+      # Password for the web dashboard (required on Render; unset = open access)
+      - key: DASHBOARD_PASSWORD
+        sync: false
