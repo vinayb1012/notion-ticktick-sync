@@ -1,0 +1,10 @@
+{
+  "ticktick_client_id": "your_ticktick_client_id",
+  "ticktick_client_secret": "your_ticktick_client_secret",
+  "ticktick_access_token": "",
+  "ticktick_refresh_token": "",
+  "notion_token": "ntn_your_notion_integration_token",
+  "notion_database_id": "your_daily_journal_database_id",
+  "notion_template_id": "your_daily_journal_template_id",
+  "redirect_uri": "http://localhost:8080/"
+}
