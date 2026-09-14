@@ -288,6 +288,23 @@ def get_ticktick_tasks_due_today(cfg: dict) -> list[dict]:
                 t["_project_name"] = pname
             all_tasks.extend(tasks)
 
+    # Also fetch Inbox tasks (Inbox is not listed by /project endpoint)
+    inbox_resp = requests.get(
+        f"{TICKTICK_API_BASE}/project/inbox/data",
+        headers=ticktick_headers(cfg),
+    )
+    if inbox_resp.status_code == 401:
+        cfg = refresh_access_token(cfg)
+        inbox_resp = requests.get(
+            f"{TICKTICK_API_BASE}/project/inbox/data",
+            headers=ticktick_headers(cfg),
+        )
+    if inbox_resp.status_code == 200:
+        inbox_tasks = inbox_resp.json().get("tasks", [])
+        for t in inbox_tasks:
+            t["_project_name"] = "Inbox"
+        all_tasks.extend(inbox_tasks)
+
     # Also get completed tasks (separate endpoint)
     resp = retry_request(
         "POST",

@@ -46,14 +46,23 @@ def _page_to_item(page: dict) -> dict:
 
 
 async def list_weekly_items(cfg: dict, client: httpx.AsyncClient, week_start: str) -> list[dict]:
-    """List all weekly items for the week starting on week_start (YYYY-MM-DD)."""
+    """List all weekly items for the week starting on week_start (YYYY-MM-DD).
+
+    Uses a Mon-Sun range filter (not `equals week_start`) so items created
+    with a mid-week Week date are included, matching the standalone script.
+    """
+    from datetime import datetime, timedelta
+    start = datetime.strptime(week_start, "%Y-%m-%d")
+    week_end = (start + timedelta(days=6)).strftime("%Y-%m-%d")
     resp = await client.post(
         f"{NOTION_API_BASE}/databases/{cfg['weekly_items_database_id']}/query",
         headers=_headers(cfg),
         json={
             "filter": {
-                "property": "Week",
-                "date": {"equals": week_start},
+                "and": [
+                    {"property": "Week", "date": {"on_or_after": week_start}},
+                    {"property": "Week", "date": {"on_or_before": week_end}},
+                ]
             },
             "sorts": [{"property": "Priority", "direction": "ascending"}],
         },
