@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
 from fastapi.responses import JSONResponse, FileResponse
 from starlette.staticfiles import StaticFiles
 
@@ -20,6 +20,7 @@ from app.weekly import (
 )
 
 import httpx
+import os
 
 logging.basicConfig(
     level=logging.INFO,
@@ -207,6 +208,50 @@ async def start_week_sync(date_str: str, background_tasks: BackgroundTasks):
 
     background_tasks.add_task(_run, job_id, week_start, week_end)
     return {"job_id": job_id, "status": "running", "week_start": week_start}
+
+
+@app.post("/api/run-sync")
+async def run_sync(request: Request):
+    """Run today's sync (for external cron services like cron-job.org).
+
+    Protected by CRON_SECRET env var: pass it as `Authorization: Bearer <secret>`.
+    Respects the same hour window as the script (SYNC_START_HOUR/SYNC_END_HOUR).
+    """
+    secret = os.environ.get("CRON_SECRET", "")
+    if secret:
+        auth = request.headers.get("authorization", "")
+        if auth != f"Bearer {secret}":
+            return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+
+    start_hour = int(os.environ.get("SYNC_START_HOUR", "0"))
+    end_hour = int(os.environ.get("SYNC_END_HOUR", "24"))
+    hour = datetime.now(timezone.utc).hour
+    if not (start_hour <= hour < end_hour):
+        return {"status": "skipped", "reason": f"hour {hour} UTC outside window {start_hour}-{end_hour}"}
+
+    global _job_counter
+    _job_counter += 1
+    job_id = f"cron-{_job_counter}"
+    date_str = today_local()
+    _jobs[job_id] = {"status": "running", "date": date_str, "kind": "cron"}
+
+    async def _run(job_id: str, date_str: str):
+        try:
+            result = await sync_date(date_str)
+            _jobs[job_id].update(status="done", result=result)
+            _remember(job_id)
+        except Exception as e:
+            log.error(f"Cron sync failed for {date_str}: {e}")
+            _jobs[job_id].update(status="error", error=str(e))
+            _remember(job_id)
+
+    import asyncio
+    asyncio.get_running_loop().create_task(_run(job_id, date_str))
+    return {"job_id": job_id, "status": "running", "date": date_str}
+
+
+def today_local() -> str:
+    return datetime.now().astimezone().strftime("%Y-%m-%d")
 
 
 # Catch-all: serve React app for any non-API route

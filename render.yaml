@@ -1,8 +1,7 @@
-# Render Blueprint: web dashboard + hourly sync cron job
+# Render Blueprint: web dashboard (sync triggered via /api/run-sync by external cron)
 # Deploy: Render dashboard → New → Blueprint → connect this repo
 
 services:
-  # Web dashboard (FastAPI + React)
   - type: web
     name: ticktick-notion-sync
     runtime: docker
@@ -28,32 +27,11 @@ services:
         sync: false
       - key: REDIRECT_URI
         value: http://localhost:8080/
-
-  # Hourly sync (8:00-23:00 UTC via hour guard in script)
-  - type: cron
-    name: ticktick-notion-sync-cron
-    runtime: docker
-    dockerCommand: python ticktick_notion_sync.py
-    schedule: "0 * * * *"
-    plan: starter
-    envVars:
-      - key: TICKTICK_CLIENT_ID
-        sync: false
-      - key: TICKTICK_CLIENT_SECRET
-        sync: false
-      - key: TICKTICK_ACCESS_TOKEN
-        sync: false
-      - key: TICKTICK_REFRESH_TOKEN
-        sync: false
-      - key: NOTION_TOKEN
-        sync: false
-      - key: NOTION_DATABASE_ID
-        sync: false
-      - key: NOTION_TEMPLATE_ID
-        sync: false
-      - key: WEEKLY_ITEMS_DATABASE_ID
-        sync: false
+      # Hour window for /api/run-sync (UTC)
       - key: SYNC_START_HOUR
         value: "8"
       - key: SYNC_END_HOUR
         value: "23"
+      # Shared secret required by /api/run-sync (set a long random string)
+      - key: CRON_SECRET
+        generateValue: true
