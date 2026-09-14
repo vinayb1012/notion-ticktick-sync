@@ -210,11 +210,11 @@ async def start_week_sync(date_str: str, background_tasks: BackgroundTasks):
     return {"job_id": job_id, "status": "running", "week_start": week_start}
 
 
-@app.api_route("/api/run-sync", methods=["GET", "POST"])
+@app.api_route("/api/run-sync", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
 async def run_sync(request: Request):
     """Run today's sync (for external cron services like cron-job.org).
 
-    Accepts GET and POST — some free cron services only send GET.
+    Accepts any HTTP method — free cron services send inconsistent methods.
     Protected by CRON_SECRET env var: pass it as `Authorization: Bearer <secret>`.
     Respects the same hour window as the script (SYNC_START_HOUR/SYNC_END_HOUR).
     """
