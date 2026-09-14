@@ -6,11 +6,7 @@ __pycache__/
 *.pyc
 node_modules/
 frontend/node_modules/
-frontend/src/
-frontend/public/
-frontend/*.json
-frontend/index.html
-frontend/README.md
+frontend/dist/
 .git/
 .gitignore
 logs/
@@ -18,6 +14,3 @@ logs/
 .DS_Store
 .idea/
 .vscode/
-README.md
-LICENSE
-render.yaml
