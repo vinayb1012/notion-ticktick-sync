@@ -155,16 +155,31 @@ async def get_tasks_for_date(cfg: dict, client: httpx.AsyncClient, date_str: str
 
     # Deduplicate recurring tasks: a completed recurring task spawns the next
     # occurrence with a new ID, so both the completed and the new occurrence
-    # can match the filter. Keep the incomplete occurrence; drop completed
-    # duplicates whose title matches an incomplete one.
+    # can match the filter. When the completed occurrence was completed on the
+    # synced date, KEEP it (it's the historical record of what was done) and
+    # drop the future incomplete twin. Otherwise (completed on an earlier day,
+    # e.g. an overdue item completed today), keep the incomplete occurrence and
+    # drop the stale completed one.
     deduped = []
-    seen_incomplete_titles = set()
+    incomplete_titles = set()
+    completed_today_titles = set()
     for t in result:
         if t.get("status") != 2:
-            seen_incomplete_titles.add(t.get("title", "").strip().lower())
+            incomplete_titles.add(t.get("title", "").strip().lower())
+        else:
+            ct = t.get("completedTime", "")
+            try:
+                cdate = datetime.fromisoformat(ct.replace("+0000", "+00:00")).astimezone(local_tz).strftime("%Y-%m-%d") if ct else ""
+            except (ValueError, TypeError):
+                cdate = ct[:10]
+            if cdate == date_str:
+                completed_today_titles.add(t.get("title", "").strip().lower())
     for t in result:
         title = t.get("title", "").strip().lower()
-        if t.get("status") == 2 and title in seen_incomplete_titles:
+        if t.get("status") != 2 and title in completed_today_titles:
+            log.info(f"Dropping future occurrence of recurring task completed today: '{t.get('title')}'")
+            continue
+        if t.get("status") == 2 and title in incomplete_titles and title not in completed_today_titles:
             log.info(f"Dropping completed duplicate of recurring task: '{t.get('title')}'")
             continue
         deduped.append(t)
