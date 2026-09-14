@@ -1,5 +1,16 @@
 import httpx
+import logging
 from datetime import datetime, timezone
+
+log = logging.getLogger("ticktick-notion-sync")
+
+
+class TickTickAuthError(Exception):
+    """Raised when TickTick auth fails and token refresh is impossible."""
+
+    def __init__(self, message: str = "TickTick auth failed — update tokens"):
+        super().__init__(message)
+
 
 TICKTICK_TOKEN_URL = "https://ticktick.com/oauth/token"
 TICKTICK_API_BASE = "https://api.ticktick.com/open/v1"
@@ -32,9 +43,13 @@ async def _api_call(cfg: dict, client: httpx.AsyncClient, method: str, url: str,
     headers = {**kwargs.pop("headers", {}), "Authorization": f"Bearer {cfg['ticktick_access_token']}"}
     resp = await client.request(method, url, headers=headers, **kwargs)
     if resp.status_code == 401:
-        cfg = await refresh_access_token(cfg, client)
-        headers["Authorization"] = f"Bearer {cfg['ticktick_access_token']}"
-        resp = await client.request(method, url, headers=headers, **kwargs)
+        try:
+            cfg = await refresh_access_token(cfg, client)
+            headers["Authorization"] = f"Bearer {cfg['ticktick_access_token']}"
+            resp = await client.request(method, url, headers=headers, **kwargs)
+        except (ValueError, httpx.HTTPStatusError) as e:
+            log.error(f"Token refresh failed: {e} — update TICKTICK_ACCESS_TOKEN/REFRESH_TOKEN")
+            raise TickTickAuthError() from e
     return resp
 
 

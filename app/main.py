@@ -8,7 +8,7 @@ from starlette.staticfiles import StaticFiles
 
 from app.models import SyncResult, TasksResponse, Task, WeeklyItem
 from app.sync import sync_date, sync_week
-from app.ticktick import get_tasks_for_date
+from app.ticktick import get_tasks_for_date, TickTickAuthError
 from app.config import load_config
 from app.weekly import (
     get_week_bounds,
@@ -79,8 +79,14 @@ async def get_tasks(date_str: str) -> TasksResponse:
         return JSONResponse(status_code=400, content={"error": "Invalid date format. Use YYYY-MM-DD."})
 
     cfg = load_config()
-    async with httpx.AsyncClient(timeout=30) as client:
-        tasks = await get_tasks_for_date(cfg, client, date_str)
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            tasks = await get_tasks_for_date(cfg, client, date_str)
+    except TickTickAuthError:
+        return JSONResponse(
+            status_code=401,
+            content={"error": "TickTick auth failed — update TICKTICK_ACCESS_TOKEN/REFRESH_TOKEN in environment"},
+        )
 
     return TasksResponse(
         date=date_str,
