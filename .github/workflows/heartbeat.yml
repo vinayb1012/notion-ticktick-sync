@@ -1,0 +1,29 @@
+# Heartbeat: reliably triggers the sync workflow every hour.
+#
+# GitHub's scheduler drops scheduled runs unpredictably (5-30 min jitter,
+# occasional silent skips). workflow_dispatch runs are never dropped, so this
+# tiny workflow fires on schedule and dispatches the real sync — a missed
+# heartbeat tick still self-heals on the next one.
+#
+# NOTE: scheduled workflows auto-disable after 60 days of no repository
+# activity (any commit resets the clock).
+
+name: heartbeat
+
+on:
+  schedule:
+    - cron: '17 * * * *' # hourly at :17 UTC, offset from sync's :07
+  workflow_dispatch: # manual runs from the Actions tab
+
+permissions:
+  actions: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger sync workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run sync.yml --repo "$GITHUB_REPOSITORY" --ref main
