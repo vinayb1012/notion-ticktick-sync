@@ -1,0 +1,43 @@
+# Hourly TickTick → Notion sync.
+#
+# NOTE: scheduled workflows auto-disable after 60 days of no repository
+# activity (any commit resets the clock). GitHub may also delay scheduled
+# runs by 5-30 minutes under load; the sync is idempotent so a missed or
+# delayed run self-heals on the next one.
+
+name: sync
+
+on:
+  schedule:
+    - cron: '7 * * * *' # hourly at :07 UTC (odd minute avoids scheduler rush)
+  workflow_dispatch: # manual runs from the Actions tab
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run sync
+        env:
+          TICKTICK_CLIENT_ID: ${{ secrets.TICKTICK_CLIENT_ID }}
+          TICKTICK_CLIENT_SECRET: ${{ secrets.TICKTICK_CLIENT_SECRET }}
+          TICKTICK_ACCESS_TOKEN: ${{ secrets.TICKTICK_ACCESS_TOKEN }}
+          TICKTICK_REFRESH_TOKEN: ${{ secrets.TICKTICK_REFRESH_TOKEN }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          NOTION_TEMPLATE_ID: ${{ secrets.NOTION_TEMPLATE_ID }}
+          WEEKLY_ITEMS_DATABASE_ID: ${{ secrets.WEEKLY_ITEMS_DATABASE_ID }}
+          SYNC_START_HOUR: '8'
+          SYNC_END_HOUR: '23'
+          TZ_NAME: 'Europe/Stockholm'
+        run: python ticktick_notion_sync.py

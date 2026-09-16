@@ -66,6 +66,7 @@ cp config.example.json config.json
 | `notion_token` | Notion integration token |
 | `notion_database_id` | Daily journal database ID (from its URL) |
 | `notion_template_id` | Daily journal template page ID |
+| `weekly_items_database_id` | Weekly items database ID |
 | `redirect_uri` | OAuth redirect (default `http://localhost:8080/`) |
 
 ### 4. Run OAuth Setup
@@ -146,12 +147,12 @@ The repo includes a Render Blueprint (`render.yaml`) that deploys the dashboard:
    - `TICKTICK_CLIENT_ID`, `TICKTICK_CLIENT_SECRET` — from your TickTick OAuth app
    - `TICKTICK_ACCESS_TOKEN`, `TICKTICK_REFRESH_TOKEN` — from a local `--setup` run (copy them out of `config.json`)
    - `NOTION_TOKEN`, `NOTION_DATABASE_ID`, `NOTION_TEMPLATE_ID`, `WEEKLY_ITEMS_DATABASE_ID` — from your Notion integration
-4. Deploy. The dashboard URL is `https://ticktick-notion-sync.onrender.com` (free tier sleeps after 15 min idle; first load takes ~30–60s).
+4. Deploy. Render assigns your service a URL like `https://<your-app>.onrender.com` (free tier sleeps after 15 min idle; first load takes ~30–60s).
 
 ### Notes
 
 - **Token rotation**: TickTick may rotate the refresh token. The cron job logs a warning if it can't persist `config.json`. If syncs start failing with 401 after a deploy/restart, re-copy fresh tokens from a local `--setup` run into the Render env vars.
-- **launchd**: once Render's cron is verified working, unload the local scheduler (`launchctl unload ~/Library/LaunchAgents/com.vinayb.ticktick-notion-sync.plist`) to avoid double-syncing.
+- **launchd**: once the cloud scheduler is verified working, unload the local scheduler (`launchctl unload ~/Library/LaunchAgents/<your-plist-name>.plist`) to avoid double-syncing.
 - **Timezone**: the hour guard uses UTC. Adjust `SYNC_START_HOUR`/`SYNC_END_HOUR` if you want a local-time window.
 
 ### Scheduling the sync (free tier)
@@ -160,7 +161,7 @@ Render's free web service has no built-in cron. Instead, `POST /api/run-sync` tr
 
 **Jobs 1 & 2 — warm-ups (hourly at :45 and :50)**
 
-- **URL**: `https://ticktick-notion-sync.onrender.com/api/health`
+- **URL**: `https://<your-app>.onrender.com/api/health`
 - **Method**: GET
 - **Auth**: none (`/api/health` is public)
 - **Cron**: `45 * * * *` and `50 * * * *`
@@ -169,7 +170,7 @@ Render's free tier spins the service down after 15 minutes of no traffic, and th
 
 **Job 3 — sync (hourly at :00)**
 
-- **URL**: `https://ticktick-notion-sync.onrender.com/api/run-sync`
+- **URL**: `https://<your-app>.onrender.com/api/run-sync`
 - **Method**: GET (the endpoint accepts all methods)
 - **Headers**: `Authorization: Bearer <your CRON_SECRET>`
 - **Cron**: `0 * * * *`
@@ -179,6 +180,26 @@ The endpoint's hour guard (8–23 UTC) makes off-hours calls no-ops. Verify sync
 **Why warm-ups at all?** Without them, the hourly sync ping itself hits a cold start and cron-job.org can intermittently report failures (connection held 30–60s).
 
 **Instance-hours math:** awake ~20–25 min per hour ≈ 240–300 h/month — well within Render's 750 free hours. (A 24/7 keep-alive every 10 min would burn ~730 of 750 hours. Note only the sync is protected — opening the dashboard after a long idle may still take 30–60s.)
+
+## Scheduling the sync with GitHub Actions (recommended)
+
+If the repository is **public** (or you have GitHub Pro), GitHub Actions can run the sync script directly on a schedule — no external cron, no warm-up pings, no Render cold starts to fight:
+
+The workflow lives at `.github/workflows/sync.yml` and runs hourly at :07 UTC. Setup:
+
+1. Make the repo public (or upgrade to GitHub Pro — scheduled workflows are disabled on private repos for free accounts).
+2. Add repository secrets (**Settings → Secrets and variables → Actions**), one per key:
+   - `TICKTICK_CLIENT_ID`, `TICKTICK_CLIENT_SECRET`
+   - `TICKTICK_ACCESS_TOKEN`, `TICKTICK_REFRESH_TOKEN` (may stay empty)
+   - `NOTION_TOKEN`, `NOTION_DATABASE_ID`, `NOTION_TEMPLATE_ID`, `WEEKLY_ITEMS_DATABASE_ID`
+3. Push to `main` (schedules only run from the default branch). Trigger a manual run from the **Actions** tab to verify — check the log output and your Notion journal.
+
+**Gotchas (all verified against GitHub's documented behavior):**
+
+- Scheduled workflows **auto-disable after 60 days of no repository activity** — any commit resets the clock. If your repo goes quiet, add a keep-alive commit or re-enable the workflow from the Actions tab when GitHub emails you.
+- Runs can be **delayed 5–30 minutes** under load (and rarely dropped). The odd `:07` minute avoids the top-of-hour rush; the sync is idempotent, so a missed run self-heals on the next one.
+- Cron is **UTC-only** — the workflow sets `SYNC_START_HOUR=8` / `SYNC_END_HOUR=23` and `TZ_NAME` to keep the sync window and date handling correct.
+- With this approach the Render web service is only needed for the **dashboard** — sync no longer depends on it staying awake. cron-job.org jobs can be retired entirely.
 
 ## Logs & Troubleshooting
 
@@ -197,8 +218,9 @@ tail -f ~/logs/ticktick-notion-sync.error.log  # errors
 
 ## Security
 
-- `config.json` (contains tokens) is gitignored — never commit it
-- For cloud deployment, move secrets to environment variables and keep the repo private
+- `config.json` (contains tokens) is gitignored — never commit it. Verify with `git log --all -- config.json` (should output nothing).
+- For cloud deployment, move secrets to environment variables or GitHub Secrets.
+- If you make the repo public, scan history once for secrets (`git log -p --all | grep -E "ntn_|ghp_"`) before pushing.
 
 ## License
 

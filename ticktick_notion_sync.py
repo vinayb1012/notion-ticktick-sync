@@ -63,7 +63,6 @@ NOTION_API_BASE = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
 
 # Weekly items sync constants
-WEEKLY_ITEMS_DB_ID = "dde14ec29d684a72aa2e39e9341747b5"       # Weekly items database
 WEEKLY_TOGGLE_NAME = "Weekly items"
 
 # ---------------------------------------------------------------------------
@@ -947,7 +946,7 @@ def query_weekly_items(cfg: dict, week_start: str, week_end: str) -> list[dict]:
     """
     resp = retry_request(
         "POST",
-        f"{NOTION_API_BASE}/databases/{WEEKLY_ITEMS_DB_ID}/query",
+        f"{NOTION_API_BASE}/databases/{cfg['weekly_items_database_id']}/query",
         headers=notion_headers(cfg),
         json={
             "filter": {
