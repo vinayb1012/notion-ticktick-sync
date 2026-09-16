@@ -76,6 +76,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.FileHandler(LOG_PATH),
+        logging.StreamHandler(sys.stdout),
     ],
 )
 log = logging.getLogger("ticktick-notion-sync")
