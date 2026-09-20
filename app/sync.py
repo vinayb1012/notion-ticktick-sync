@@ -46,13 +46,16 @@ async def sync_week(week_start: str, week_end: str) -> dict:
     cfg = load_config()
 
     from datetime import datetime, timedelta
-    from app.weekly import list_weekly_items
+    from app.weekly import list_weekly_items, carry_over_incomplete_items
 
     start = datetime.strptime(week_start, "%Y-%m-%d")
     end = datetime.strptime(week_end, "%Y-%m-%d")
     today_local = datetime.now().astimezone().strftime("%Y-%m-%d")
 
     async with httpx.AsyncClient(timeout=30) as client:
+        carried = await carry_over_incomplete_items(cfg, client, week_start)
+        if carried:
+            log.info("Carried over %d unfinished weekly item(s) into week %s", carried, week_start)
         items = await list_weekly_items(cfg, client, week_start)
 
         results = []

@@ -18,6 +18,7 @@ from app.weekly import (
     set_weekly_item_done,
     update_weekly_item_priority,
     delete_weekly_item,
+    move_weekly_item_to_next_week,
 )
 
 import httpx
@@ -215,6 +216,18 @@ async def remove_item(page_id: str):
     async with httpx.AsyncClient(timeout=30) as client:
         await delete_weekly_item(cfg, client, page_id)
     return {"ok": True}
+
+
+@app.post("/api/items/{page_id}/move", dependencies=_auth)
+async def move_item_to_next_week(page_id: str):
+    """Move a weekly item to the week after the one it currently belongs to."""
+    cfg = load_config()
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            item = await move_weekly_item_to_next_week(cfg, client, page_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "item": item}
 
 
 @app.post("/api/sync-week/{date_str}", dependencies=_auth)

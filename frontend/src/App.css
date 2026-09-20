@@ -176,6 +176,16 @@
 
 .btn-danger-ghost:hover { color: var(--red); }
 
+.btn-ghost-move {
+  background: transparent;
+  border: none;
+  color: var(--text-faint);
+  font-size: 13px;
+  padding: 4px 8px;
+}
+
+.btn-ghost-move:hover { color: var(--accent); }
+
 .spinner {
   width: 14px;
   height: 14px;

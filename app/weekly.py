@@ -110,6 +110,68 @@ async def update_weekly_item_priority(
     resp.raise_for_status()
 
 
+async def move_weekly_item_to_next_week(cfg: dict, client: httpx.AsyncClient, page_id: str) -> dict:
+    """Move a weekly item to the week after the one it currently belongs to."""
+    resp = await client.get(
+        f"{NOTION_API_BASE}/pages/{page_id}",
+        headers=_headers(cfg),
+    )
+    resp.raise_for_status()
+    item = _page_to_item(resp.json())
+    if not item["week"]:
+        raise ValueError("Item has no Week date set")
+    from datetime import datetime, timedelta
+    current = datetime.strptime(item["week"][:10], "%Y-%m-%d")
+    next_week = (current + timedelta(days=7)).strftime("%Y-%m-%d")
+    resp = await client.patch(
+        f"{NOTION_API_BASE}/pages/{page_id}",
+        headers=_headers(cfg),
+        json={"properties": {"Week": {"date": {"start": next_week}}}},
+    )
+    resp.raise_for_status()
+    return _page_to_item(resp.json())
+
+
+async def carry_over_incomplete_items(cfg: dict, client: httpx.AsyncClient, current_monday: str) -> int:
+    """Roll unfinished items from past weeks into the week starting current_monday.
+
+    Queries items with Week < current_monday and Done == false, then sets each
+    item's Week to current_monday. Completed items stay in their original week.
+    Returns the number of items moved.
+    """
+    from datetime import datetime, timedelta
+    monday = datetime.strptime(current_monday, "%Y-%m-%d")
+    day_before = (monday - timedelta(days=1)).strftime("%Y-%m-%d")
+    resp = await client.post(
+        f"{NOTION_API_BASE}/databases/{cfg['weekly_items_database_id']}/query",
+        headers=_headers(cfg),
+        json={
+            "filter": {
+                "and": [
+                    {"property": "Week", "date": {"on_or_before": day_before}},
+                    {"property": "Done", "checkbox": {"equals": False}},
+                ]
+            },
+        },
+    )
+    resp.raise_for_status()
+    moved = 0
+    for page in resp.json().get("results", []):
+        page_id = page["id"]
+        patch = await client.patch(
+            f"{NOTION_API_BASE}/pages/{page_id}",
+            headers=_headers(cfg),
+            json={"properties": {"Week": {"date": {"start": current_monday}}}},
+        )
+        if patch.status_code == 200:
+            moved += 1
+            name = _page_to_item(page)["name"]
+            log.info("Carried over unfinished weekly item: %s", name)
+        else:
+            log.warning("Failed to carry over item %s: %s", page_id, patch.text)
+    return moved
+
+
 async def delete_weekly_item(cfg: dict, client: httpx.AsyncClient, page_id: str) -> None:
     resp = await client.patch(
         f"{NOTION_API_BASE}/pages/{page_id}",

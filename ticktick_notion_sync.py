@@ -982,6 +982,52 @@ def query_weekly_items(cfg: dict, week_start: str, week_end: str) -> list[dict]:
     return items
 
 
+def carry_over_incomplete_weekly_items(cfg: dict, current_monday: str) -> int:
+    """Roll unfinished items from past weeks into the week starting current_monday.
+
+    Queries items with Week < current_monday and Done == false, then sets each
+    item's Week to current_monday. Completed items stay in their original week.
+    Returns the number of items moved.
+    """
+    day_before = (
+        datetime.strptime(current_monday, "%Y-%m-%d") - timedelta(days=1)
+    ).strftime("%Y-%m-%d")
+    resp = retry_request(
+        "POST",
+        f"{NOTION_API_BASE}/databases/{cfg['weekly_items_database_id']}/query",
+        headers=notion_headers(cfg),
+        json={
+            "filter": {
+                "and": [
+                    {"property": "Week", "date": {"on_or_before": day_before}},
+                    {"property": "Done", "checkbox": {"equals": False}},
+                ]
+            },
+        },
+    )
+    if resp.status_code == 404:
+        log.warning("Weekly items database not found or not shared with integration")
+        return 0
+    resp.raise_for_status()
+
+    moved = 0
+    for r in resp.json().get("results", []):
+        props = r.get("properties", {})
+        name = "".join(t.get("plain_text", "") for t in props.get("Name", {}).get("title", []))
+        patch = requests.patch(
+            f"{NOTION_API_BASE}/pages/{r['id']}",
+            headers=notion_headers(cfg),
+            json={"properties": {"Week": {"date": {"start": current_monday}}}},
+            timeout=30,
+        )
+        if patch.status_code == 200:
+            moved += 1
+            log.info(f"Carried over unfinished weekly item: {name}")
+        else:
+            log.warning(f"Failed to carry over item '{name}': {patch.status_code} {patch.text}")
+    return moved
+
+
 def find_weekly_toggle(cfg: dict, page_id: str) -> str | None:
     """Find the existing 'Weekly items' toggle block on a journal page."""
     resp = requests.get(
@@ -1218,6 +1264,9 @@ def sync() -> None:
         local_dt = datetime.now(local_tz)
         week_start = get_week_start(local_dt)
         week_end = get_week_end(local_dt)
+        carried = carry_over_incomplete_weekly_items(cfg, week_start)
+        if carried:
+            log.info(f"Carried over {carried} unfinished weekly item(s) into week {week_start}")
         weekly_items = query_weekly_items(cfg, week_start, week_end)
         sync_weekly_items_to_journal(cfg, page_id, weekly_items)
     except requests.exceptions.RequestException as e:

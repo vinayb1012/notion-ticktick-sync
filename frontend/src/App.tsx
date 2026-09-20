@@ -328,6 +328,17 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     }
   }
 
+  const moveItem = async (item: WeeklyItem) => {
+    setWeek(w => w ? { ...w, items: w.items.filter(i => i.id !== item.id) } : w)
+    try {
+      const resp = await apiFetch(`/api/items/${item.id}/move`, { method: 'POST' })
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    } catch {
+      setError('Failed to move item')
+      fetchWeek(date)
+    }
+  }
+
   const doneCount = tasks.filter(t => t.status === 2).length
   const weekDone = week?.items.filter(i => i.done).length ?? 0
   const weekTotal = week?.items.length ?? 0
@@ -468,6 +479,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                     {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
                     {!item.priority && <option value="">—</option>}
                   </select>
+                  <button className="btn-ghost-move" onClick={() => moveItem(item)} title="Move to next week">→</button>
                   <button className="btn-danger-ghost" onClick={() => removeItem(item)} title="Delete">✕</button>
                 </div>
               ))
