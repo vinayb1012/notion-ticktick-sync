@@ -26,6 +26,12 @@ def get_week_bounds(date_str: str) -> tuple[str, str]:
     return monday.strftime("%Y-%m-%d"), sunday.strftime("%Y-%m-%d")
 
 
+def _week_end(week_start: str) -> str:
+    """Sunday for a Monday week start (YYYY-MM-DD) — used as date range end."""
+    from datetime import datetime, timedelta
+    return (datetime.strptime(week_start, "%Y-%m-%d") + timedelta(days=6)).strftime("%Y-%m-%d")
+
+
 def _page_to_item(page: dict) -> dict:
     props = page.get("properties", {})
     name = "".join(
@@ -81,7 +87,7 @@ async def create_weekly_item(
             "parent": {"database_id": cfg["weekly_items_database_id"]},
             "properties": {
                 "Name": {"title": [{"text": {"content": name}}]},
-                "Week": {"date": {"start": week_start}},
+                "Week": {"date": {"start": week_start, "end": _week_end(week_start)}},
                 "Priority": {"select": {"name": priority}},
             },
         },
@@ -126,7 +132,7 @@ async def move_weekly_item_to_next_week(cfg: dict, client: httpx.AsyncClient, pa
     resp = await client.patch(
         f"{NOTION_API_BASE}/pages/{page_id}",
         headers=_headers(cfg),
-        json={"properties": {"Week": {"date": {"start": next_week}}}},
+        json={"properties": {"Week": {"date": {"start": next_week, "end": _week_end(next_week)}}}},
     )
     resp.raise_for_status()
     return _page_to_item(resp.json())
@@ -161,7 +167,7 @@ async def carry_over_incomplete_items(cfg: dict, client: httpx.AsyncClient, curr
         patch = await client.patch(
             f"{NOTION_API_BASE}/pages/{page_id}",
             headers=_headers(cfg),
-            json={"properties": {"Week": {"date": {"start": current_monday}}}},
+            json={"properties": {"Week": {"date": {"start": current_monday, "end": _week_end(current_monday)}}}},
         )
         if patch.status_code == 200:
             moved += 1

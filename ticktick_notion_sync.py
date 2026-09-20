@@ -940,6 +940,11 @@ def get_week_end(date_obj: datetime) -> str:
     return sunday.strftime("%Y-%m-%d")
 
 
+def week_end_for(week_start: str) -> str:
+    """Sunday for a Monday week start (YYYY-MM-DD) — used as date range end."""
+    return (datetime.strptime(week_start, "%Y-%m-%d") + timedelta(days=6)).strftime("%Y-%m-%d")
+
+
 def query_weekly_items(cfg: dict, week_start: str, week_end: str) -> list[dict]:
     """Query the Weekly items DB for items whose Week overlaps this week.
 
@@ -1017,7 +1022,7 @@ def carry_over_incomplete_weekly_items(cfg: dict, current_monday: str) -> int:
         patch = requests.patch(
             f"{NOTION_API_BASE}/pages/{r['id']}",
             headers=notion_headers(cfg),
-            json={"properties": {"Week": {"date": {"start": current_monday}}}},
+            json={"properties": {"Week": {"date": {"start": current_monday, "end": week_end_for(current_monday)}}}},
             timeout=30,
         )
         if patch.status_code == 200:
