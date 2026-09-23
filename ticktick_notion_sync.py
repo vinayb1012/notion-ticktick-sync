@@ -55,6 +55,16 @@ LOG_PATH = LOG_DIR / "ticktick-notion-sync.log"
 SYNC_START_HOUR = int(os.environ.get("SYNC_START_HOUR", "0"))
 SYNC_END_HOUR = int(os.environ.get("SYNC_END_HOUR", "24"))
 
+
+def get_local_tz():
+    """Timezone for local date/hour comparison.
+
+    TZ_NAME env var overrides (e.g. TZ_NAME=Europe/Stockholm on cloud hosts
+    that run in UTC). Defaults to the system timezone.
+    """
+    tz_name = os.environ.get("TZ_NAME", "")
+    return ZoneInfo(tz_name) if tz_name else datetime.now(timezone.utc).astimezone().tzinfo
+
 TICKTICK_AUTH_URL = "https://ticktick.com/oauth/authorize"
 TICKTICK_TOKEN_URL = "https://ticktick.com/oauth/token"
 TICKTICK_API_BASE = "https://api.ticktick.com/open/v1"
@@ -251,8 +261,7 @@ def get_ticktick_tasks_due_today(cfg: dict) -> list[dict]:
     Uses per-project endpoint to avoid the 200-task limit of /task/filter.
     """
     # Timezone for local date comparison (TZ_NAME env var overrides system tz)
-    tz_name = os.environ.get("TZ_NAME", "")
-    local_tz = ZoneInfo(tz_name) if tz_name else datetime.now(timezone.utc).astimezone().tzinfo
+    local_tz = get_local_tz()
     today_local = datetime.now(local_tz).strftime("%Y-%m-%d")
 
     # Get all projects
@@ -630,8 +639,7 @@ def is_task_overdue(task: dict) -> bool:
     if task.get("status") == 2:
         return False
 
-    tz_name = os.environ.get("TZ_NAME", "")
-    local_tz = ZoneInfo(tz_name) if tz_name else datetime.now(timezone.utc).astimezone().tzinfo
+    local_tz = get_local_tz()
     today_local = datetime.now(local_tz).strftime("%Y-%m-%d")
     
     due = task.get("dueDate", "")
@@ -659,7 +667,7 @@ def build_task_blocks(tasks: list[dict]) -> tuple[list[dict], int, int]:
     - Links back to TickTick
     - Completion summary
     """
-    local_tz = datetime.now(timezone.utc).astimezone().tzinfo
+    local_tz = get_local_tz()
     today_local = datetime.now(local_tz).strftime("%Y-%m-%d")
     
     # Separate overdue and today tasks
@@ -1215,9 +1223,10 @@ def sync_weekly_items_to_journal(cfg: dict, page_id: str, items: list[dict]) -> 
 
 def sync() -> None:
     """Run the full TickTick → Notion sync."""
-    # Hour guard for always-on cron schedulers (no-op outside the window)
+    # Hour guard for always-on cron schedulers (no-op outside the window).
+    # Compared in LOCAL time (TZ_NAME-aware), not the host's system time.
     if SYNC_START_HOUR > 0 or SYNC_END_HOUR < 24:
-        hour = datetime.now().hour
+        hour = datetime.now(get_local_tz()).hour
         if not (SYNC_START_HOUR <= hour < SYNC_END_HOUR):
             log.info(f"Hour {hour} outside sync window {SYNC_START_HOUR}-{SYNC_END_HOUR} — skipping")
             return
@@ -1237,7 +1246,7 @@ def sync() -> None:
         sys.exit(1)
 
     # Get today's date string in local timezone (matching your journal format)
-    local_tz = datetime.now(timezone.utc).astimezone().tzinfo
+    local_tz = get_local_tz()
     date_str = datetime.now(local_tz).strftime("%d-%b-%Y")  # e.g., "05-Sep-2026"
     log.info(f"Today's date: {date_str}")
 

@@ -270,9 +270,9 @@ async def run_sync(request: Request):
 
     start_hour = int(os.environ.get("SYNC_START_HOUR", "0"))
     end_hour = int(os.environ.get("SYNC_END_HOUR", "24"))
-    hour = datetime.now(timezone.utc).hour
+    hour = _local_hour()
     if not (start_hour <= hour < end_hour):
-        return {"status": "skipped", "reason": f"hour {hour} UTC outside window {start_hour}-{end_hour}"}
+        return {"status": "skipped", "reason": f"hour {hour} local outside window {start_hour}-{end_hour}"}
 
     global _job_counter
     _job_counter += 1
@@ -293,6 +293,13 @@ async def run_sync(request: Request):
     import asyncio
     asyncio.get_running_loop().create_task(_run(job_id, date_str))
     return {"job_id": job_id, "status": "running", "date": date_str}
+
+
+def _local_hour() -> int:
+    """Current hour in the configured timezone (TZ_NAME overrides system tz)."""
+    name = os.environ.get("TZ_NAME", "")
+    tz = ZoneInfo(name) if name else datetime.now().astimezone().tzinfo
+    return datetime.now(tz).hour
 
 
 def today_local() -> str:
