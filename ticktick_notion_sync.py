@@ -1083,6 +1083,7 @@ def read_weekly_toggle_items(cfg: dict, toggle_id: str) -> list[dict]:
                     "block_id": block["id"],
                     "text": text,
                     "checked": block["to_do"].get("checked", False),
+                    "last_edited": block.get("last_edited_time", ""),
                 })
         has_more = data.get("has_more", False)
         cursor = data.get("next_cursor")
@@ -1103,33 +1104,62 @@ def sync_weekly_items_to_journal(cfg: dict, page_id: str, items: list[dict]) -> 
 
     headers = notion_headers(cfg)
 
-    # Two-way check reconciliation when toggle already exists
+    # Two-way check reconciliation when toggle already exists.
+    # Conflict rule: whichever side was edited more recently wins.
+    # Journal block last_edited_time > DB page last_edited_time -> journal
+    # state propagates (both tick AND untick); otherwise DB state wins.
     toggle_id = find_weekly_toggle(cfg, page_id)
     if toggle_id:
         journal_items = read_weekly_toggle_items(cfg, toggle_id)
         db_by_name = {it["name"].strip(): it for it in items}
 
-        # 1) Journal -> DB: user checked an item on the journal page
+        # Fetch DB page last_edited timestamps for conflict resolution
+        db_edited = {}
+        for it in items:
+            try:
+                pr = requests.get(
+                    f"{NOTION_API_BASE}/pages/{it['id']}",
+                    headers=headers,
+                )
+                pr.raise_for_status()
+                db_edited[it["id"]] = pr.json().get("last_edited_time", "")
+            except (requests.exceptions.RequestException, ValueError, KeyError):
+                db_edited[it["id"]] = ""
+
+        def journal_wins(ji: dict, match: dict) -> bool:
+            """True when the journal checkbox is newer than the DB page."""
+            je = ji.get("last_edited", "")
+            de = db_edited.get(match["id"], "")
+            if not je or not de:
+                return False
+            return je > de
+
+        # 1) Journal -> DB: journal checkbox newer than DB (tick or untick)
         for ji in journal_items:
             match = db_by_name.get(ji["text"].strip())
-            if match and ji["checked"] and not match["done"]:
-                log.info(f"Journal check -> DB: '{ji['text']}'")
+            if not match:
+                continue
+            if ji["checked"] != match["done"] and journal_wins(ji, match):
+                direction = "tick" if ji["checked"] else "untick"
+                log.info(f"Journal {direction} -> DB: '{ji['text']}'")
                 requests.patch(
                     f"{NOTION_API_BASE}/pages/{match['id']}",
                     headers=headers,
-                    json={"properties": {"Done": {"checkbox": True}}},
+                    json={"properties": {"Done": {"checkbox": ji["checked"]}}},
                 ).raise_for_status()
-                match["done"] = True
+                match["done"] = ji["checked"]
 
-        # 2) DB -> Journal: user checked an item in the DB/Weekly list
+        # 2) DB -> Journal: DB state newer than journal block (tick or untick)
         for ji in journal_items:
             match = db_by_name.get(ji["text"].strip())
-            if match and match["done"] and not ji["checked"]:
-                log.info(f"DB check -> Journal: '{ji['text']}'")
+            if not match:
+                continue
+            if match["done"] != ji["checked"] and not journal_wins(ji, match):
+                log.info(f"DB -> Journal {'check' if match['done'] else 'uncheck'}: '{ji['text']}'")
                 requests.patch(
                     f"{NOTION_API_BASE}/blocks/{ji['block_id']}",
                     headers=headers,
-                    json={"to_do": {"checked": True}},
+                    json={"to_do": {"checked": match["done"]}},
                 ).raise_for_status()
 
         # 3) Append items added to the DB after this page's snapshot was taken.

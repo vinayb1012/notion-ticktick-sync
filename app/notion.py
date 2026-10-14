@@ -436,7 +436,11 @@ async def find_weekly_toggle(cfg: dict, client: httpx.AsyncClient, page_id: str)
 
 
 async def read_weekly_toggle_items(cfg: dict, client: httpx.AsyncClient, toggle_id: str) -> list[dict]:
-    """Read to_do blocks inside the Weekly items toggle."""
+    """Read to_do blocks inside the Weekly items toggle.
+
+    Returns {block_id, text, checked, last_edited} per item
+    (last_edited = block's last_edited_time, ISO timestamp).
+    """
     items = []
     has_more = True
     cursor = None
@@ -457,6 +461,7 @@ async def read_weekly_toggle_items(cfg: dict, client: httpx.AsyncClient, toggle_
                     "block_id": block["id"],
                     "text": _plain_text(block["to_do"].get("rich_text", [])),
                     "checked": block["to_do"].get("checked", False),
+                    "last_edited": block.get("last_edited_time", ""),
                 })
         has_more = data.get("has_more", False)
         cursor = data.get("next_cursor")
@@ -476,33 +481,64 @@ async def sync_weekly_items_to_journal(cfg: dict, client: httpx.AsyncClient, pag
     if not items:
         return out
 
-    # Two-way check reconciliation when toggle already exists
+    # Two-way check reconciliation when toggle already exists.
+    # Conflict rule: whichever side was edited more recently wins.
+    # Journal block last_edited_time > DB page last_edited_time -> journal
+    # state propagates (both tick AND untick); otherwise DB state wins.
     toggle_id = await find_weekly_toggle(cfg, client, page_id)
     if toggle_id:
         journal_items = await read_weekly_toggle_items(cfg, client, toggle_id)
         db_by_name = {it["name"].strip(): it for it in items}
 
-        # 1) Journal -> DB: user checked an item on the journal page
+        # Fetch DB page last_edited timestamps for conflict resolution
+        db_edited = {}
+        for it in items:
+            try:
+                pr = await client.get(
+                    f"{NOTION_API_BASE}/pages/{it['id']}",
+                    headers=_headers(cfg),
+                )
+                pr.raise_for_status()
+                db_edited[it["id"]] = pr.json().get("last_edited_time", "")
+            except Exception:
+                db_edited[it["id"]] = ""
+
+        def journal_wins(ji: dict, match: dict) -> bool:
+            """True when the journal checkbox is newer than the DB page."""
+            je = ji.get("last_edited", "")
+            de = db_edited.get(match["id"], "")
+            if not je or not de:
+                return False
+            return je > de
+
+        # 1) Journal -> DB: journal checkbox newer than DB (tick or untick)
         for ji in journal_items:
             match = db_by_name.get(ji["text"].strip())
-            if match and ji["checked"] and not match["done"]:
+            if not match:
+                continue
+            if ji["checked"] != match["done"] and journal_wins(ji, match):
+                direction = "tick" if ji["checked"] else "untick"
+                log.info(f"Journal {direction} -> DB: '{ji['text']}'")
                 resp = await client.patch(
                     f"{NOTION_API_BASE}/pages/{match['id']}",
                     headers=_headers(cfg),
-                    json={"properties": {"Done": {"checkbox": True}}},
+                    json={"properties": {"Done": {"checkbox": ji["checked"]}}},
                 )
                 resp.raise_for_status()
-                match["done"] = True
+                match["done"] = ji["checked"]
                 out["checked_journal_to_db"] += 1
 
-        # 2) DB -> Journal: user checked an item in the DB/Weekly list
+        # 2) DB -> Journal: DB state newer than journal block (tick or untick)
         for ji in journal_items:
             match = db_by_name.get(ji["text"].strip())
-            if match and match["done"] and not ji["checked"]:
+            if not match:
+                continue
+            if match["done"] != ji["checked"] and not journal_wins(ji, match):
+                log.info(f"DB -> Journal {match['done']} : '{ji['text']}'")
                 resp = await client.patch(
                     f"{NOTION_API_BASE}/blocks/{ji['block_id']}",
                     headers=_headers(cfg),
-                    json={"to_do": {"checked": True}},
+                    json={"to_do": {"checked": match["done"]}},
                 )
                 resp.raise_for_status()
                 out["checked_db_to_journal"] += 1
