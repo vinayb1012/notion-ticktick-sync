@@ -17,6 +17,8 @@ interface SyncResult {
   page_id: string
   page_url: string
   tasks_synced: number
+  weekly_items_synced?: number
+  carried_over?: number
   created: boolean
 }
 
@@ -388,6 +390,9 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         <button className="nav-btn" onClick={() => setDate(d => shiftDate(d, 1))} title="Next day">›</button>
         <button className="today-btn" onClick={() => setDate(todayStr())}>Today</button>
         <div className="spacer" />
+        <button className="btn btn-ghost" onClick={() => fetchTasks(date)} disabled={loading} title="Reload tasks from TickTick and Notion">
+          {loading ? <><span className="spinner" /> Loading…</> : <>↻</>}
+        </button>
         <button className="btn btn-primary" onClick={syncTasks} disabled={syncing}>
           {syncing ? <><span className="spinner" /> Syncing…</> : <>Sync {fmtDate(date).split(',')[0]} to Notion</>}
         </button>
@@ -396,7 +401,8 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       {error && <div className="alert error">⚠ {error}</div>}
       {result && (
         <div className="alert success">
-          ✓ {result.created ? 'Created' : 'Updated'} journal page for {result.date} — {result.tasks_synced} tasks synced.
+          ✓ {result.created ? 'Created' : 'Updated'} journal page for {result.date} — {result.tasks_synced} tasks synced
+          {typeof result.weekly_items_synced === 'number' ? `, ${result.weekly_items_synced} weekly items${result.carried_over ? ` (${result.carried_over} carried over)` : ''}` : ''}.
         </div>
       )}
 
