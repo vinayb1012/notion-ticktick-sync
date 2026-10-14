@@ -1,5 +1,6 @@
 import logging
 import httpx
+from datetime import datetime, timezone
 
 from app.config import load_config
 from app.ticktick import get_tasks_for_date
@@ -13,6 +14,10 @@ async def sync_date(date_str: str) -> dict:
 
     READS existing Notion pages — only creates new ones if none exist.
     Never modifies existing page content beyond the tasks toggle.
+
+    For today's date, also syncs weekly items (carryover of unfinished
+    past-week items + snapshot into the journal's 'Weekly items' toggle).
+    Past dates stay purely task-focused — frozen history.
     """
     cfg = load_config()
 
@@ -28,12 +33,35 @@ async def sync_date(date_str: str) -> dict:
 
         await write_tasks_to_journal(cfg, client, page_id, tasks)
 
+        # Weekly items snapshot only for TODAY (past pages are frozen history)
+        weekly_synced = 0
+        carried = 0
+        today_local = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d")
+        if date_str == today_local:
+            from app.weekly import (
+                carry_over_incomplete_items,
+                list_weekly_items,
+                get_week_bounds,
+            )
+            from app.notion import sync_weekly_items_to_journal
+
+            week_start, week_end = get_week_bounds(today_local)
+            carried = await carry_over_incomplete_items(cfg, client, week_start)
+            if carried:
+                log.info("Carried over %d unfinished weekly item(s) into week %s", carried, week_start)
+            items = await list_weekly_items(cfg, client, week_start)
+            synced = await sync_weekly_items_to_journal(cfg, client, page_id, items)
+            weekly_synced = len(items)
+            log.info("Weekly items synced for %s: %d item(s)", date_str, weekly_synced)
+
     page_url = f"https://notion.so/{page_id.replace('-', '')}"
     return {
         "date": date_str,
         "page_id": page_id,
         "page_url": page_url,
         "tasks_synced": len(tasks),
+        "weekly_items_synced": weekly_synced,
+        "carried_over": carried,
         "created": created,
     }
 
