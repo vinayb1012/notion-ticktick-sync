@@ -221,6 +221,12 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     fetchWeek(date)
   }, [date, fetchTasks, fetchWeek])
 
+  // Re-fetch week items whenever the Week tab becomes active (fresh state,
+  // e.g. journal ticks synced in the meantime)
+  useEffect(() => {
+    if (tab === 'week') fetchWeek(date)
+  }, [tab, date, fetchWeek])
+
   useEffect(() => () => { if (pollRef.current) window.clearTimeout(pollRef.current) }, [])
 
   const pollJob = async (jobId: string, onDone: (entry: Record<string, unknown>) => void) => {
@@ -452,9 +458,14 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         <div className="card">
           <div className="week-banner">
             <span>Week of <strong>{week ? fmtDate(week.week_start) : '…'}</strong> → <strong>{week ? fmtDate(week.week_end) : ''}</strong></span>
-            <button className="btn btn-ghost" onClick={syncWeek} disabled={weekSyncing} style={{ padding: '6px 14px', fontSize: 13 }}>
-              {weekSyncing ? <><span className="spinner dark" /> Syncing…</> : '↻ Push to journal'}
-            </button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn btn-ghost" onClick={() => fetchWeek(date)} disabled={weekLoading} title="Reload weekly items from Notion" style={{ padding: '6px 14px', fontSize: 13 }}>
+                {weekLoading ? <><span className="spinner dark" /> Loading…</> : '↻ Refresh'}
+              </button>
+              <button className="btn btn-ghost" onClick={syncWeek} disabled={weekSyncing} style={{ padding: '6px 14px', fontSize: 13 }}>
+                {weekSyncing ? <><span className="spinner dark" /> Syncing…</> : '↻ Push to journal'}
+              </button>
+            </div>
           </div>
           {weekTotal > 0 && (
             <div className="progress">
