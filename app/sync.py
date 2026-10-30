@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import httpx
 from datetime import datetime, timezone
@@ -7,6 +8,11 @@ from app.ticktick import get_tasks_for_date
 from app.notion import find_journal_page, create_journal_page, write_tasks_to_journal
 
 log = logging.getLogger("ticktick-notion-sync")
+
+# Serialize sync runs so the dashboard button and the cron endpoint can never
+# write the same Notion page concurrently (concurrent child-block writes cause
+# Notion 409 Conflict errors).
+_sync_lock = asyncio.Lock()
 
 
 async def sync_date(date_str: str) -> dict:
@@ -21,7 +27,7 @@ async def sync_date(date_str: str) -> dict:
     """
     cfg = load_config()
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with _sync_lock, httpx.AsyncClient(timeout=30) as client:
         tasks = await get_tasks_for_date(cfg, client, date_str)
         log.info(f"Fetched {len(tasks)} tasks for {date_str}")
 
@@ -80,7 +86,7 @@ async def sync_week(week_start: str, week_end: str) -> dict:
     end = datetime.strptime(week_end, "%Y-%m-%d")
     today_local = datetime.now().astimezone().strftime("%Y-%m-%d")
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with _sync_lock, httpx.AsyncClient(timeout=30) as client:
         carried = await carry_over_incomplete_items(cfg, client, week_start)
         if carried:
             log.info("Carried over %d unfinished weekly item(s) into week %s", carried, week_start)

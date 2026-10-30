@@ -25,22 +25,33 @@ import requests
 # Retry helper
 # ---------------------------------------------------------------------------
 
-def retry_request(method: str, url: str, max_retries: int = 3, **kwargs) -> requests.Response:
-    """Make an HTTP request with exponential backoff retry."""
+RETRY_STATUSES = {409, 429, 500, 502, 503, 504}
+
+
+def retry_request(method: str, url: str, max_retries: int = 4, **kwargs) -> requests.Response:
+    """Make an HTTP request with exponential backoff retry.
+
+    Retries transient failures: connection errors, server errors, rate limits
+    and 409 Conflict (Notion raises this when the parent block is concurrently
+    modified — e.g. a parallel sync or the page open in the editor).
+    """
+    delay = 1.0
+    resp = None
     for attempt in range(max_retries):
         try:
             resp = requests.request(method, url, **kwargs)
-            if resp.status_code < 500:
+            if resp.status_code not in RETRY_STATUSES:
                 return resp
-            # Server error — retry
         except requests.exceptions.ConnectionError:
             pass  # Network error — retry
         if attempt < max_retries - 1:
-            delay = 2 ** attempt  # 1s, 2s, 4s
-            log.warning(f"Request failed (attempt {attempt + 1}/{max_retries}), retrying in {delay}s...")
+            log.warning(
+                f"Request failed (attempt {attempt + 1}/{max_retries}, "
+                f"status {getattr(resp, 'status_code', 'n/a')}), retrying in {delay:.1f}s..."
+            )
             time.sleep(delay)
-    # Final attempt
-    return requests.request(method, url, **kwargs)
+            delay = min(delay * 2, 4.0)
+    return resp if resp is not None else requests.request(method, url, **kwargs)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -846,20 +857,16 @@ def write_tasks_to_journal(cfg: dict, page_id: str, tasks: list[dict]) -> None:
             log.error("Failed to find or create 'Tasks for the day' heading")
             return
 
-    # Check for existing ticktick toggle
+    # Check for existing ticktick toggle (deleted AFTER the new one is written,
+    # so a mid-way failure never leaves the page without its task snapshot)
     existing_toggle_id = find_ticktick_toggle(cfg, page_id)
-
-    if existing_toggle_id:
-        # Delete existing toggle and its children
-        log.info("Removing existing ticktick toggle block")
-        requests.delete(
-            f"{NOTION_API_BASE}/blocks/{existing_toggle_id}",
-            headers=headers,
-        ).raise_for_status()
-        time.sleep(0.5)  # Notion rate limit
 
     if not tasks:
         log.info("No tasks to write")
+        if existing_toggle_id:
+            resp = retry_request("DELETE", f"{NOTION_API_BASE}/blocks/{existing_toggle_id}", headers=headers)
+            if resp.status_code >= 400:
+                log.warning(f"Could not delete empty tasks toggle: {resp.status_code}")
         return
 
     # Find the index of the heading block to insert after it
@@ -879,7 +886,8 @@ def write_tasks_to_journal(cfg: dict, page_id: str, tasks: list[dict]) -> None:
         heading_index = len(blocks)  # fallback: append at end
 
     # Step 1: Create empty toggle block at the correct position
-    toggle_resp = requests.patch(
+    toggle_resp = retry_request(
+        "PATCH",
         f"{NOTION_API_BASE}/blocks/{page_id}/children",
         headers=headers,
         json={
@@ -907,7 +915,8 @@ def write_tasks_to_journal(cfg: dict, page_id: str, tasks: list[dict]) -> None:
     # Step 2: Append task checkboxes inside the toggle
     task_blocks, completed_count, total_count = build_task_blocks(tasks)
     if task_blocks:
-        children_resp = requests.patch(
+        children_resp = retry_request(
+            "PATCH",
             f"{NOTION_API_BASE}/blocks/{toggle_id}/children",
             headers=headers,
             json={"children": task_blocks},
@@ -916,7 +925,8 @@ def write_tasks_to_journal(cfg: dict, page_id: str, tasks: list[dict]) -> None:
 
     # Update toggle name with colored progress
     name_segments = _get_toggle_name_segments(completed_count, total_count)
-    requests.patch(
+    retry_request(
+        "PATCH",
         f"{NOTION_API_BASE}/blocks/{toggle_id}",
         headers=headers,
         json={
@@ -928,6 +938,12 @@ def write_tasks_to_journal(cfg: dict, page_id: str, tasks: list[dict]) -> None:
             }
         },
     ).raise_for_status()
+
+    # Old snapshot superseded — remove it only after the new one is complete
+    if existing_toggle_id and existing_toggle_id != toggle_id:
+        del_resp = retry_request("DELETE", f"{NOTION_API_BASE}/blocks/{existing_toggle_id}", headers=headers)
+        if del_resp.status_code >= 400 and del_resp.status_code != 404:
+            log.warning(f"Could not delete old tasks toggle: {del_resp.status_code}")
 
     log.info(f"Successfully wrote {len(tasks)} tasks to journal")
 

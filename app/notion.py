@@ -19,6 +19,51 @@ def _headers(cfg: dict) -> dict:
     }
 
 
+
+# ---------------------------------------------------------------------------
+# Resilient Notion block writes
+# ---------------------------------------------------------------------------
+
+RETRY_STATUSES = {409, 429, 500, 502, 503, 504}
+
+
+async def _block_request(
+    cfg: dict,
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    *,
+    json: dict | None = None,
+    max_retries: int = 5,
+) -> httpx.Response:
+    """Notion request with exponential backoff for transient conflicts.
+
+    Notion returns 409 Conflict when the parent block is concurrently modified
+    (parallel sync, user editing in the UI, or a just-deleted sibling). Retrying
+    with backoff resolves it in nearly all cases.
+    """
+    delay = 0.5
+    resp = None
+    for attempt in range(max_retries):
+        resp = await client.request(method, url, headers=_headers(cfg), json=json)
+        if resp.status_code not in RETRY_STATUSES:
+            return resp
+        if attempt == max_retries - 1:
+            break
+        log.warning(
+            "Notion %s %s -> %s (attempt %d/%d), retrying in %.1fs",
+            method, url.rsplit("/v1", 1)[-1], resp.status_code, attempt + 1, max_retries, delay,
+        )
+        await _async_sleep(delay)
+        delay = min(delay * 2, 4.0)
+    return resp
+
+
+async def _async_sleep(seconds: float) -> None:
+    import asyncio
+    await asyncio.sleep(seconds)
+
+
 def _format_date_for_notion(date_str: str) -> str:
     """Convert YYYY-MM-DD to DD-Mon-YYYY (e.g., 08-Sep-2026) for Notion page titles."""
     dt = datetime.strptime(date_str, "%Y-%m-%d")
@@ -355,19 +400,26 @@ async def write_tasks_to_journal(cfg: dict, client: httpx.AsyncClient, page_id: 
             return
 
     existing_toggle_id = await _find_ticktick_toggle(cfg, client, page_id)
-    if existing_toggle_id:
-        await client.delete(
-            f"{NOTION_API_BASE}/blocks/{existing_toggle_id}",
-            headers=_headers(cfg),
-        )
-        time.sleep(0.3)
 
     if not tasks:
+        # No tasks: only remove a stale toggle, nothing to add
+        if existing_toggle_id:
+            resp = await _block_request(
+                cfg, client, "DELETE", f"{NOTION_API_BASE}/blocks/{existing_toggle_id}"
+            )
+            if resp.status_code >= 400:
+                log.warning("Could not delete empty tasks toggle: %s", resp.status_code)
         return
 
-    toggle_resp = await client.patch(
+    task_blocks, completed_count, total_count = _build_task_blocks(tasks)
+
+    # Create the NEW toggle first, then delete the old one. If any write fails
+    # mid-way the previous snapshot stays intact (no data loss on 409s).
+    toggle_resp = await _block_request(
+        cfg,
+        client,
+        "PATCH",
         f"{NOTION_API_BASE}/blocks/{page_id}/children",
-        headers=_headers(cfg),
         json={
             "children": [
                 {
@@ -384,19 +436,23 @@ async def write_tasks_to_journal(cfg: dict, client: httpx.AsyncClient, page_id: 
     toggle_resp.raise_for_status()
     toggle_id = toggle_resp.json()["results"][0]["id"]
 
-    task_blocks, completed_count, total_count = _build_task_blocks(tasks)
     if task_blocks:
-        await client.patch(
+        blocks_resp = await _block_request(
+            cfg,
+            client,
+            "PATCH",
             f"{NOTION_API_BASE}/blocks/{toggle_id}/children",
-            headers=_headers(cfg),
             json={"children": task_blocks},
         )
+        blocks_resp.raise_for_status()
 
     # Update toggle name with colored progress
     name_segments = _get_toggle_name_segments(completed_count, total_count)
-    await client.patch(
+    name_resp = await _block_request(
+        cfg,
+        client,
+        "PATCH",
         f"{NOTION_API_BASE}/blocks/{toggle_id}",
-        headers=_headers(cfg),
         json={
             "toggle": {
                 "rich_text": [
@@ -406,6 +462,15 @@ async def write_tasks_to_journal(cfg: dict, client: httpx.AsyncClient, page_id: 
             }
         },
     )
+    name_resp.raise_for_status()
+
+    # Old snapshot is superseded — remove it now that the new one is complete
+    if existing_toggle_id and existing_toggle_id != toggle_id:
+        del_resp = await _block_request(
+            cfg, client, "DELETE", f"{NOTION_API_BASE}/blocks/{existing_toggle_id}"
+        )
+        if del_resp.status_code >= 400 and del_resp.status_code != 404:
+            log.warning("Could not delete old tasks toggle: %s", del_resp.status_code)
 
     log.info(f"Wrote {len(tasks)} tasks to journal page")
 
@@ -558,9 +623,11 @@ async def sync_weekly_items_to_journal(cfg: dict, client: httpx.AsyncClient, pag
                 }
                 for it in new_items
             ]
-            resp = await client.patch(
+            resp = await _block_request(
+                cfg,
+                client,
+                "PATCH",
                 f"{NOTION_API_BASE}/blocks/{toggle_id}/children",
-                headers=_headers(cfg),
                 json={"children": children},
             )
             resp.raise_for_status()
@@ -577,9 +644,11 @@ async def sync_weekly_items_to_journal(cfg: dict, client: httpx.AsyncClient, pag
         log.error("Cannot place 'Weekly items' toggle: no 'Tasks for the day' heading")
         return out
 
-    toggle_resp = await client.patch(
+    toggle_resp = await _block_request(
+        cfg,
+        client,
+        "PATCH",
         f"{NOTION_API_BASE}/blocks/{page_id}/children",
-        headers=_headers(cfg),
         json={
             "children": [
                 {
@@ -614,9 +683,11 @@ async def sync_weekly_items_to_journal(cfg: dict, client: httpx.AsyncClient, pag
         for it in ordered
     ]
     if children:
-        resp = await client.patch(
+        resp = await _block_request(
+            cfg,
+            client,
+            "PATCH",
             f"{NOTION_API_BASE}/blocks/{toggle_id}/children",
-            headers=_headers(cfg),
             json={"children": children},
         )
         resp.raise_for_status()
